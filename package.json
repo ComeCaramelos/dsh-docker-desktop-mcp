@@ -1,0 +1,36 @@
+{
+  "name": "@comecaramelos/dsh-docker-desktop-mcp",
+  "description": "DSH plugin: Docker Desktop MCP gateway with a UI profile picker (wraps @deepseek-ai/dsh-mcp-client)",
+  "author": "ComeCaramelos",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "test": "node test/parse.test.mjs && node test/client.test.mjs"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-launch-environment": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "^0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  }
+}

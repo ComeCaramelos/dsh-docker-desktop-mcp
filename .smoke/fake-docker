@@ -1,0 +1,9 @@
+#!/bin/sh
+# Test shim: logs every invocation; answers `mcp profile list` with sample
+# profiles; fails gateway runs (like a CLI without the profiles feature).
+echo "ARGS: $*" >> "$(dirname "$0")/args.log"
+if [ "$2" = "profile" ]; then
+	printf '[{"id":"alpha","name":"Alpha"},{"id":"beta","name":"Beta"}]\n'
+	exit 0
+fi
+exit 1
