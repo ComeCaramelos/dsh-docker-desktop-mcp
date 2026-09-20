@@ -2,6 +2,14 @@
   "name": "@comecaramelos/dsh-docker-desktop-mcp",
   "description": "DSH plugin: Docker Desktop MCP gateway with a UI profile picker (wraps @deepseek-ai/dsh-mcp-client)",
   "author": "ComeCaramelos <hello@comecaramelos.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ComeCaramelos/dsh-docker-desktop-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ComeCaramelos/dsh-docker-desktop-mcp/issues"
+  },
+  "homepage": "https://github.com/ComeCaramelos/dsh-docker-desktop-mcp#readme",
   "version": "0.0.1",
   "license": "MIT",
   "type": "module",

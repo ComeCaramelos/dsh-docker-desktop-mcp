@@ -225,12 +225,15 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   **not** re-import changed plugin JS. JS changes need a `dsh web` restart.
 - WSL + Docker Desktop (Windows side): two separate MCP stores exist — the
   Linux CLI's `~/.docker/mcp` (usually empty) and Desktop's
-  `C:\Users\<you>\.docker\mcp` (where UI-created profiles live). Set row
-  config `command: /Docker/host/bin/docker.exe` so discovery + gateway use
-  the Desktop store. Don't try `DOCKER_CONFIG=/mnt/c/…` with the Linux CLI:
-  it rejects the Windows store ("Failed to initialize: protocol not
-  available"). A row-config `command` change hot-applies under
-  `patchReload: live` (discovery + gateway restart in place).
+  `C:\Users\<you>\.docker\mcp` (where UI-created profiles live). The default
+  row `command: docker` is auto-resolved by `resolveDockerCommand()` to
+  `/Docker/host/bin/docker.exe` when that path is executable on linux (only
+  the literal default is rewritten; a non-`docker` command always wins), so
+  discovery + gateway use the Desktop store with no row config. Don't try
+  `DOCKER_CONFIG=/mnt/c/…` with the Linux CLI: it rejects the Windows store
+  ("Failed to initialize: protocol not available"). A row-config `command`
+  change hot-applies under `patchReload: live` (discovery + gateway restart
+  in place).
 - Test writes land in the shared `~/.dsh/settings.yaml`
   (`docker-desktop-mcp` section) — remove test data (fake profile ids, etc.)
   when done.
