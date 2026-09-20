@@ -10,7 +10,7 @@
     "url": "https://github.com/ComeCaramelos/dsh-docker-desktop-mcp/issues"
   },
   "homepage": "https://github.com/ComeCaramelos/dsh-docker-desktop-mcp#readme",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
