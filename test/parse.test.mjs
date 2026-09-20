@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractProfileIds, listProfiles, readPersistedProfile, resolveBaseProfile } from "../lib/index.js";
+import { extractProfileIds, listProfiles, readPersistedProfile, resolveBaseProfile, resolveDockerCommand, WSL_DOCKER_HOST_COMMAND } from "../lib/index.js";
 
 const cases = [
     // bare array of objects with id
@@ -33,6 +33,14 @@ assert.equal(resolveBaseProfile("default", undefined), "default", "no env keeps 
 assert.equal(resolveBaseProfile("default", ""), "default", "empty env keeps config");
 assert.equal(resolveBaseProfile("default", "BAD PROFILE!"), "default", "invalid env keeps config");
 assert.equal(resolveBaseProfile("cfg", 42), "cfg", "non-string env keeps config");
+
+// resolveDockerCommand: only the literal default "docker" is rewritten, only
+// on linux, only when the WSL host CLI path exists.
+assert.equal(resolveDockerCommand("docker", { platform: "linux", exists: () => true }), WSL_DOCKER_HOST_COMMAND, "linux + wsl cli present rewrites default docker");
+assert.equal(resolveDockerCommand("docker", { platform: "linux", exists: () => false }), "docker", "no wsl cli path keeps default");
+assert.equal(resolveDockerCommand("docker", { platform: "darwin", exists: () => true }), "docker", "non-linux never rewrites");
+assert.equal(resolveDockerCommand("win32-docker", { platform: "linux", exists: () => true }), "win32-docker", "explicit command always wins");
+assert.equal(resolveDockerCommand("/Docker/host/bin/docker.exe", { platform: "linux", exists: () => true }), "/Docker/host/bin/docker.exe", "explicit host path stays put");
 
 // readPersistedProfile: returns the stored user-layer profile only when the
 // settings service is up and the value is a valid profile id; otherwise undefined.

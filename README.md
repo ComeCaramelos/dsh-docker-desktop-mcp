@@ -47,7 +47,13 @@ Then replace (or create) your `dsh-mcp-client` row in
     profile: default
 ```
 
-With `patchReload: live` the host half reloads automatically; refresh the browser for the picker card.
+### WSL + Docker Desktop (Windows)
+
+Docker Desktop keeps its MCP profiles in the Windows store
+(`C:\Users\<you>\.docker\mcp`), while the Linux CLI inside the distro reads the
+(usually empty) `~/.docker/mcp`. When `/Docker/host/bin/docker.exe` is
+executable on linux, discovery and the gateway spawn use it.
+Set `command` to an explicit path to opt out.
 
 ## Why this over the default config
 
