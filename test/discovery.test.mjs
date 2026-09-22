@@ -130,7 +130,12 @@ function makeCtx() {
             if (typeof disposer === "function") disposers.push(disposer);
         },
         inject(_deps, callback) {
-            callback({ settings });
+            if (_deps.includes("commands")) {
+                callback({ commands: { register: () => () => {} } });
+            }
+            if (_deps.includes("settings")) {
+                callback({ settings });
+            }
         },
         get(name) {
             if (name === "settings") return settings;

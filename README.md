@@ -51,20 +51,51 @@ Then replace (or create) your `dsh-mcp-client` row in
 
 Docker Desktop keeps its MCP profiles in the Windows store
 (`C:\Users\<you>\.docker\mcp`), while the Linux CLI inside the distro reads the
-(usually empty) `~/.docker/mcp`. When `/Docker/host/bin/docker.exe` is
-executable on linux, discovery and the gateway spawn use it.
-Set `command` to an explicit path to opt out.
+(usually empty) `~/.docker/mcp`. When `docker.exe` is executable on linux —
+either at `/Docker/host/bin/docker.exe` or anywhere the WSL `PATH` resolves it
+— discovery and the gateway spawn use it (the host path wins over PATH). Set
+`command` to an explicit path to opt out.
 
 ## Why this over the default config
 
 - **Profile picker in Settings** — switch Docker MCP profiles without editing
   `cordis.patch.yml`. Selection persists in `$DSH_HOME/settings.yaml`.
 - **Refresh profiles button** — runs `docker mcp profile list --format json`
-  and repopulates the select from the host.
+  and repopulates the select from the host. While the list is healthy and
+  non-empty it is authoritative: `default` appears only if Desktop reports
+  it; on a discovery error or an empty list it stays selectable as fallback.
+- **Docker executable field** — the card shows the `docker` CLI actually in use
+  (the auto-detected default when no override is set) and lets you point the
+  gateway + discovery at a different executable. A non-empty path wins
+  verbatim; clearing it drops back to the auto-detected default (the same WSL
+  host-path rewrite as the row-config `command`). Changing it hot-restarts the
+  gateway and re-discovers against the new CLI.
 - **Hot reconnect** — picking a profile re-applies the gateway with the new
   `--profile` in place; no restart needed.
-- **Profile precedence**: UI selection > `DSH_DOCKER_MCP_PROFILE` env var >
-  row config > `"default"`. Seed a machine default via env, switch per-run from UI.
+- **Profile precedence**: the UI picker and `/docker-profile` write the *same*
+  `profile` field in the settings user layer — the last write wins — so both
+  stay above `DSH_DOCKER_MCP_PROFILE` > row config > `"default"`.
+  Seed a machine default via env, switch per-run from UI or TUI.
+- **Executable precedence**: the UI field writes the *same* `command` field —
+  the last write wins — so it stays above the row-config `command` and its
+  WSL auto-resolution.
+
+## Slash commands
+
+Requires a profile that provides the `commands` service (TUI).
+
+```
+/docker-profile <profile-id>
+    Switches the Docker MCP gateway profile. Persists the selection so it
+    survives restarts and syncs across instances sharing `settings.yaml`.
+    Shows discovered profiles in the error message when no argument is given.
+    Re-selecting the profile the gateway already runs with reports
+    "already active" and performs no reconnect.
+
+/docker-refresh
+    Runs `docker mcp profile list` and returns the result. Use after
+    creating or deleting profiles on Docker Desktop to refresh the list.
+```
 
 ---
 

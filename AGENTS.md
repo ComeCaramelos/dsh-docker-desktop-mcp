@@ -26,11 +26,22 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
 
 - **One settings namespace per host**: `docker-desktop-mcp` is fixed, not
   derived from `serverName`. A second instance must fail loud, not alias.
-- **Profile precedence** (highest first): UI selection (settings user layer in
-  `$DSH_HOME/settings.yaml`) → `DSH_DOCKER_MCP_PROFILE` env var (resolved via
+- **Profile precedence** (highest first): the settings USER LAYER (the Web UI
+  picker AND the `/docker-profile` slash command write the same `profile`
+  field — last write wins) in `$DSH_HOME/settings.yaml` →
+  `DSH_DOCKER_MCP_PROFILE` env var (resolved via
   `launchEnvironmentOf(ctx)`, never raw `process.env`) → row config
   `profile` → `"default"`. Env values not matching
   `/^[A-Za-z0-9._-]{1,128}$/` are ignored with a warning, never thrown.
+- **Slash commands** `/docker-profile` / `/docker-refresh` register through
+  `ctx.inject(["commands"], …)` — silently absent when the bundle provides no
+  `commands` service. Registration goes through a helper that retains the
+  `register()` disposers in `commandDisposers`, released by a plugin-ctx
+  `ctx.effect` cleanup: the registry owns its registrations on the COMMANDS
+  provider ctx, NOT this plugin, so without that cleanup a hot re-apply would
+  collide (duplicate name throws inside `register` — it is caught and warned,
+  keeping the earlier definitions live). Handlers must not rely on
+  `invocation.signal` (nothing is cancellable).
 - **Gateway argv shape is fixed**: `mcp gateway run --profile <id>` plus
   `extraArgs`. Discovery uses `mcp profile list --format json` with a tolerant
   parser (bare array or wrapped; ids from `id ?? profileID ?? profileId ??
@@ -38,14 +49,24 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   "enable the profiles feature" hint when the CLI reports an unknown
   flag/command.
 - Profile **ids**, not display names, drive `--profile` and the UI selector.
+- **Selector options**: a healthy, non-empty discovery list is AUTHORITATIVE
+  in the Web card — `default` appears as an option only when Desktop actually
+  reports it (no phantom option). On a discovery error or an empty list the
+  store is not trustworthy, so `default` stays selectable as the fallback
+  option (the current profile stays appended too, so a picked id never
+  disappears). The same rule feeds `missing`-dot logic and the
+  `/docker-profile` usage listing.
 - **Profile switch = `fiber.update()`** on the nested mcp-client bridge
   (re-validates + restarts the connection in place). Never recreate the
   plugin row; never throw out of the settings `onChange` callback.
-- **Settings persistence boundary**: only `profile` (last UI selection) and
-  `refreshNonce` may land in `$DSH_HOME/settings.yaml`.
-  Discovery state (`profiles`, `lastRefreshError`, `discoveryRevision`)
-  lives in the composition **base layer** — the `entry` object handed to
-  `installSection` — held in memory, never persisted. But note:
+- **Settings persistence boundary**: only `profile` (last UI selection),
+  `command` (last UI executable override) and `refreshNonce` may land in
+  `$DSH_HOME/settings.yaml`. The executable actually in use
+  (`effectiveCommand`) plus the discovery state (`profiles`,
+  `lastRefreshError`, `discoveryRevision`) live in the composition **base
+  layer** — the `entry` object handed to `installSection` — held in memory,
+  never persisted (`effectiveCommand` is unset in the user layer on
+  registration, so an accidentally-persisted one is cleaned). But note:
   `dsh-settings` recomputes the `describe()` **resolved value** only on
   writes (at registration and in user-section `write`), never when the base
   entry mutates in memory — and the resolved value (NOT the `base`
@@ -122,9 +143,11 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   the `installSection` initial `onChange` switches the bridge to the
   persisted selection in place right after registration.
 - **Legacy migration**: earlier versions persisted `profiles`/
-  `lastRefreshError` into the user layer; on registration the host unsets
-  those keys via `settings.mutate` (one-time cleanup; the raw-section
-  change also re-serves the fresh base layer to open clients).
+  `lastRefreshError` into the user layer, and `effectiveCommand` (an in-memory
+  base-layer field) must never be persisted; on registration the host unsets
+  `profiles`, `lastRefreshError`, `discoveryRevision` and `effectiveCommand` via
+  `settings.mutate` (one-time cleanup; the raw-section change also re-serves
+  the fresh base layer to open clients).
 
 ## Client-bundle gotchas (cost real debugging time)
 
@@ -205,8 +228,9 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   two-phase spawn is normal, not a bug.
 - Observables: `.smoke/args.log` and the `docker-desktop-mcp` section of
   `$DSH_HOME/settings.yaml` (post-migration it must be exactly
-  `refreshNonce` + `profile`; a host-pushed `refreshNonce` is NEGATIVE —
-  positive values come only from the UI).
+  `refreshNonce` + `profile` + (when a UI override was set) `command`; a
+  host-pushed `refreshNonce` is NEGATIVE — positive values come only from the
+  UI).
 - Headless source check without touching `~/.dsh`: `DSH_HOME=$(mktemp -d)
   <npx>/node_modules/.bin/dsh web --patch .smoke/overlay-fake-boot.yml
   --port <unused> --no-open` — inserts the row from `../lib/index.js` against
@@ -227,9 +251,11 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   Linux CLI's `~/.docker/mcp` (usually empty) and Desktop's
   `C:\Users\<you>\.docker\mcp` (where UI-created profiles live). The default
   row `command: docker` is auto-resolved by `resolveDockerCommand()` to
-  `/Docker/host/bin/docker.exe` when that path is executable on linux (only
-  the literal default is rewritten; a non-`docker` command always wins), so
-  discovery + gateway use the Desktop store with no row config. Don't try
+  `/Docker/host/bin/docker.exe` when that path is executable on linux, else
+  to the first `docker.exe` found on the launch `PATH` (WSL interop exposes it
+  there when the host-bin mount is absent) (only the literal default is
+  rewritten; a non-`docker` command always wins), so discovery + gateway use
+  the Desktop store with no row config. Don't try
   `DOCKER_CONFIG=/mnt/c/…` with the Linux CLI: it rejects the Windows store
   ("Failed to initialize: protocol not available"). A row-config `command`
   change hot-applies under `patchReload: live` (discovery + gateway restart

@@ -115,6 +115,8 @@ const storeState = {
     available: false,
     writable: false,
     profile: "",
+    command: "",
+    effectiveCommand: "",
     profiles: [],
     lastRefreshError: "",
     discoveryRevision: 0,
@@ -203,6 +205,8 @@ const scopeSnapshot = {
     status: "ready",
     value: {
         profile: "default",
+        command: "",
+        effectiveCommand: "/usr/bin/docker",
         profiles: ["alpha", "beta"],
         refreshNonce: 0,
         lastRefreshError: "",
@@ -249,7 +253,7 @@ const ctx = {
         register: (ns, dicts) => {
             assert.equal(ns, "dockerDesktopMcp");
             assert.ok(dicts.en);
-            var required = ["title", "description", "profileLabel", "hint", "refresh", "refreshing", "readOnly", "empty", "statusMissing", "statusError", "statusUnreachable", "expand", "collapse"];
+            var required = ["title", "description", "profileLabel", "hint", "commandLabel", "commandHint", "commandPlaceholder", "refresh", "refreshing", "readOnly", "empty", "statusMissing", "statusError", "statusUnreachable", "expand", "collapse"];
             var enKeys = Object.keys(dicts.en).sort();
             assert.equal(JSON.stringify(enKeys), JSON.stringify(required.slice().sort()), "en key set");
             for (var i = 0; i < required.length; i++) {
@@ -335,6 +339,7 @@ function render(state) {
         t: (k) => k,
         useDockerMcpCard: (sel) => sel(state),
         selectProfile: (v) => scope.set("profile", v),
+        setCommand: (v) => scope.set("command", v),
         refreshProfiles: () => scope.set("refreshNonce", 123)
     });
     react.useState = _useState;
@@ -422,7 +427,7 @@ const nodes = walk(tree);
 const menu = nodes.find((n) => n.type === "Menu");
 assert.ok(menu, "Menu rendered once expanded");
 assert.equal(menu.props.open, false, "menu closed by default");
-assert.equal(JSON.stringify(menu.props.items), JSON.stringify([{ id: "alpha", label: "alpha" }, { id: "beta", label: "beta" }, { id: "default", label: "default" }]), "current profile appended when not discovered");
+assert.equal(JSON.stringify(menu.props.items), JSON.stringify([{ id: "alpha", label: "alpha" }, { id: "beta", label: "beta" }]), "healthy non-empty discovery is authoritative: undiscovered default is dropped");
 assert.equal(menu.props.selectedId, "default");
 assert.equal(menu.props.align, "end");
 assert.equal(menu.props.portal, true);
@@ -533,11 +538,67 @@ const menuDedup = walk(tree).find((n) => n.type === "Menu");
 assert.equal(JSON.stringify(menuDedup.props.items),
     JSON.stringify([{ id: "alpha", label: "alpha" }, { id: "beta", label: "beta" }]), "items deduped when profile among discovered ids");
 
+// ── default option: authoritative list vs fallback (B.8) ──────────────────
+// Empty discovery (no error, no ids): the store is not trustworthy, so
+// `default` stays selectable as the fallback option.
+Object.assign(storeState, { profile: "default", profiles: [], lastRefreshError: "", actionError: "" });
+tree = render(storeState);
+const menuEmpty = walk(tree).find((n) => n.type === "Menu");
+assert.equal(JSON.stringify(menuEmpty.props.items), JSON.stringify([{ id: "default", label: "default" }]),
+    "empty healthy discovery keeps default as the fallback option");
+// Current profile never disappears while the list is not authoritative.
+Object.assign(storeState, { profile: "stale", profiles: [] });
+tree = render(storeState);
+const menuStale = walk(tree).find((n) => n.type === "Menu");
+assert.equal(JSON.stringify(menuStale.props.items), JSON.stringify([{ id: "default", label: "default" }, { id: "stale", label: "stale" }]),
+    "fallback list keeps current profile next to default");
+// Discovery error: even a non-empty list is not trusted — default comes back.
+Object.assign(storeState, { profile: "stale", profiles: ["alpha", "beta"], lastRefreshError: "docker mcp profile list failed" });
+tree = render(storeState);
+const menuError = walk(tree).find((n) => n.type === "Menu");
+assert.equal(JSON.stringify(menuError.props.items), JSON.stringify([{ id: "alpha", label: "alpha" }, { id: "beta", label: "beta" }, { id: "default", label: "default" }, { id: "stale", label: "stale" }]),
+    "errored discovery re-adds default as fallback option");
+// restore the healthy state for the rest of the suite
+Object.assign(storeState, { profile: "alpha", profiles: ["alpha", "beta"], lastRefreshError: "" });
+
 // ── field label ──────────────────────────────────
 const fieldTitle = walk(tree).find(isNode("div", "dshdmc_fieldTitle"));
 assert.ok(fieldTitle, "profile field title rendered");
 assert.equal(fieldTitle.props.children, "profileLabel");
 assert.ok(walk(tree).find(isNode("div", "dshdmc_fieldDesc")), "profile field description rendered");
+
+// ── executable text field (the primitive) ──────────────────────────────────
+// The card shows the executable actually in use (`effectiveCommand`) in a
+// text input and commits an edit on blur / Enter.
+Object.assign(storeState, {
+    profile: "alpha",
+    command: "",
+    effectiveCommand: "/usr/bin/docker",
+    profiles: ["alpha", "beta"],
+    lastRefreshError: "",
+    actionError: ""
+});
+render(storeState);
+tree = render(storeState);
+let commandInput = walk(tree).find((n) => n.type === "input");
+assert.ok(commandInput, "an executable input renders once expanded");
+assert.equal(commandInput.props.type, "text", "the executable control is a text input");
+assert.equal(commandInput.props.value, "/usr/bin/docker", "the input shows the effective executable");
+assert.equal(commandInput.props.placeholder, "commandPlaceholder", "placeholder resolved through locale");
+assert.equal(commandInput.props.disabled, false, "input writable while writable");
+// typing updates the local draft without persisting
+commandInput.props.onChange({ target: { value: "  /opt/docker/bin/docker  " } });
+let typed = walk(render(storeState)).find((n) => n.type === "input");
+assert.equal(typed.props.value, "  /opt/docker/bin/docker  ", "typing updates the draft locally");
+assert.ok(!writes.some(([f]) => f === "command"), "typing alone does not persist the executable");
+// blur commits the trimmed override
+typed.props.onBlur();
+assert.ok(writes.some(([f, v]) => f === "command" && v === "/opt/docker/bin/docker"), "blur commits the trimmed executable");
+// Enter commits too, and the field is disabled when read-only
+Object.assign(storeState, { writable: false });
+let readonly = walk(render(storeState)).find((n) => n.type === "input");
+assert.equal(readonly.props.disabled, true, "executable input disabled while settings are read-only");
+Object.assign(storeState, { writable: true });
 
 // ── status dot (credentialDot pattern) ───────────────────────────────────
 // a discovery error takes the dot's aria-label + title
