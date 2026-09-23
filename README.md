@@ -72,6 +72,15 @@ either at `/Docker/host/bin/docker.exe` or anywhere the WSL `PATH` resolves it
   gateway and re-discovers against the new CLI.
 - **Hot reconnect** — picking a profile re-applies the gateway with the new
   `--profile` in place; no restart needed.
+- **Quiet console** — the MCP stdio transport spawns the gateway with
+  inherited stderr, so every gateway progress line (catalog loads, image
+  pulls, `Running …`, tool counts, the initialize dump) echoes straight onto
+  the dsh terminal. By default the plugin redirects it instead: gateway
+  stderr goes to a log file (`$TMPDIR/dsh-docker-mcp-<serverName>-gateway-
+  <pid>.log`) and the console shows a single `gateway stderr → <path>` line.
+  Configure the row with `gatewayStderr: console` to get the raw echo back,
+  or `gatewayStderrLog: /path/to/file.log` to choose the destination. The
+  protocol stream (stdout) is untouched — only stderr moves.
 - **Profile precedence**: the UI picker and `/docker-profile` write the *same*
   `profile` field in the settings user layer — the last write wins — so both
   stay above `DSH_DOCKER_MCP_PROFILE` > row config > `"default"`.

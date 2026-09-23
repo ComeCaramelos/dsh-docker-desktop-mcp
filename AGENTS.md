@@ -48,6 +48,32 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   name`). Discovery errors: first non-empty stderr line, capped, plus the
   "enable the profiles feature" hint when the CLI reports an unknown
   flag/command.
+- **Gateway console noise** is handled WITHOUT touching the argv shape: the
+  MCP stdio transport spawns the gateway with `stderr: "inherit"` (SDK
+  default; the `dsh-mcp-client` bridge config exposes no stderr knob), so
+  every gateway progress line lands on the dsh console. Row config
+  `gatewayStderr` (default `"log"`) wraps the gateway spawn in `sh -c` whose
+  script `exec`s the gateway with the argv VERBATIM (positional pass-through
+  — no re-quoting, no joining), so the gateway process never sees the
+  wrapper and the constraint above holds as written. stdout stays the
+  protocol stream; stderr goes to `gatewayStderrLog` (default
+  `$TMPDIR/dsh-docker-mcp-<serverName>-gateway-<pid>.log`, truncated on every
+  spawn). `"console"` disables the wrapper (raw inherited stderr). The script
+  exits 127 with an exec-failure message on the sh's own inherited stderr
+  when the executable is missing, and falls back to plain inheritance
+  (`fallback` = `"platform"` / `"shell"`) where no POSIX shell exists — the
+  notice/warning is emitted once per apply (`noteGatewayStderr`, keyed on
+  redirect/fallback). Discovery spawns stay unwrapped (their stdio is already
+  piped/ignored). The wrapper is strictly PER-SPAWN: it rewrites only the
+  `command`/`args` of this bridge's config — no monkey-patching of the
+  shared `StdioClientTransport`, no global flags — so other plugins spawning
+  stdio servers through the same hoisted `@deepseek-ai/dsh-mcp-client`/SDK
+  keep their inherited stderr untouched (verified live: a second plain
+  `mcp-client` row's server stderr still reaches the console, and this
+  gateway's goes to the log, with zero cross-capture).
+  The bridge config object carries ONLY `dsh-mcp-client`
+  fields; `redirect`/`fallback` ride a sibling object from `bridgeConfig`,
+  never the config passed to `ctx.plugin`/`fiber.update`.
 - Profile **ids**, not display names, drive `--profile` and the UI selector.
 - **Selector options**: a healthy, non-empty discovery list is AUTHORITATIVE
   in the Web card — `default` appears as an option only when Desktop actually
