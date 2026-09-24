@@ -77,10 +77,19 @@ either at `/Docker/host/bin/docker.exe` or anywhere the WSL `PATH` resolves it
   pulls, `Running …`, tool counts, the initialize dump) echoes straight onto
   the dsh terminal. By default the plugin redirects it instead: gateway
   stderr goes to a log file (`$TMPDIR/dsh-docker-mcp-<serverName>-gateway-
-  <pid>.log`) and the console shows a single `gateway stderr → <path>` line.
-  Configure the row with `gatewayStderr: console` to get the raw echo back,
-  or `gatewayStderrLog: /path/to/file.log` to choose the destination. The
-  protocol stream (stdout) is untouched — only stderr moves.
+  <pid>.log`), and the host logs a single one-line notice
+  (`gateway stderr → <path>`). The log is truncated on every gateway spawn.
+  Set the row config `gatewayStderr: console` to skip the redirect and get
+  the raw echo back, or `gatewayStderrLog: /path/to/file.log` to choose the
+  destination. The protocol stream (stdout) is untouched — only stderr moves.
+- **Reduce log output toggle** — the same behavior is exposed in Settings on
+  the Docker Desktop card: a `Reduce log output` switch, ON by default
+  (capture into the log file). Switching it OFF mirrors `gatewayStderr:
+  console` — the gateway's stderr echoes to the dsh console again, useful to
+  debug the raw gateway output. The switch restarts the gateway connection
+  (the redirect is fixed at spawn) and persists to `settings.yaml`. When a
+  value was never chosen the switch falls back to the row config
+  (`gatewayStderr`, default `log`).
 - **Profile precedence**: the UI picker and `/docker-profile` write the *same*
   `profile` field in the settings user layer — the last write wins — so both
   stay above `DSH_DOCKER_MCP_PROFILE` > row config > `"default"`.

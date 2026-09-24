@@ -74,6 +74,24 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   The bridge config object carries ONLY `dsh-mcp-client`
   fields; `redirect`/`fallback` ride a sibling object from `bridgeConfig`,
   never the config passed to `ctx.plugin`/`fiber.update`.
+- **UI stderr-mode toggle** ("Reduce log output" in the Web card). The
+  effective mode resolves strictly as the USER layer `stderrMode`
+  (`"log"`/`"console"`) when set, else the row config `gatewayStderr`
+  (`""` = auto) — `resolveStderrMode`, never a third state. The switch
+  writes the user layer (so it persists, like the picker/executable do);
+  its `onChange` branch is independent of the profile/command branches and
+  restarts the gateway connection via `bridge.update` (`applyStderrMode`)
+  because the spawn shape can only change by respawn — a `fiber` that is
+  still `void 0` (readiness gate) just records the mode for the first
+  start. The row default is served to clients as a STATIC base field
+  `rowStderr` (never persisted) so the switch shows the truth before any
+  write — `dsh-settings` serves base fields with the registration value,
+  so unlike the discovery fields it needs no nonce bump. `validate` MUST
+  accept `""` alongside `"log"`/`"console"`: registration resolves to
+  `""` in a fresh settings.yaml, and a strict non-empty check throws
+  inside `installSection` — a caught, console-invisible error that leaves
+  the settings gate unresolved and the plugin never discovering (this
+  bit us live: empty-home boots failed while seeded ones worked).
 - Profile **ids**, not display names, drive `--profile` and the UI selector.
 - **Selector options**: a healthy, non-empty discovery list is AUTHORITATIVE
   in the Web card — `default` appears as an option only when Desktop actually
@@ -86,7 +104,9 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   (re-validates + restarts the connection in place). Never recreate the
   plugin row; never throw out of the settings `onChange` callback.
 - **Settings persistence boundary**: only `profile` (last UI selection),
-  `command` (last UI executable override) and `refreshNonce` may land in
+  `command` (last UI executable override), `stderrMode` (last "Reduce log
+  output" toggle write — `"log"`/`"console"`, only present once the switch
+  was actually flipped) and `refreshNonce` may land in
   `$DSH_HOME/settings.yaml`. The executable actually in use
   (`effectiveCommand`) plus the discovery state (`profiles`,
   `lastRefreshError`, `discoveryRevision`) live in the composition **base
@@ -170,8 +190,10 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   persisted selection in place right after registration.
 - **Legacy migration**: earlier versions persisted `profiles`/
   `lastRefreshError` into the user layer, and `effectiveCommand` (an in-memory
-  base-layer field) must never be persisted; on registration the host unsets
-  `profiles`, `lastRefreshError`, `discoveryRevision` and `effectiveCommand` via
+  base-layer field) plus `rowStderr` (a static base mirror of `gatewayStderr`
+  meant only for serving) must never be persisted; on registration the host
+  unsets `profiles`, `lastRefreshError`, `discoveryRevision`,
+  `effectiveCommand` and `rowStderr` via
   `settings.mutate` (one-time cleanup; the raw-section change also re-serves
   the fresh base layer to open clients).
 
@@ -254,9 +276,23 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   two-phase spawn is normal, not a bug.
 - Observables: `.smoke/args.log` and the `docker-desktop-mcp` section of
   `$DSH_HOME/settings.yaml` (post-migration it must be exactly
-  `refreshNonce` + `profile` + (when a UI override was set) `command`; a
+  `refreshNonce` + `profile` + (when a UI override was set) `command` +
+  (when the Reduce-log-output switch was ever flipped) `stderrMode`; a
   host-pushed `refreshNonce` is NEGATIVE — positive values come only from the
   UI).
+- **CRLF trap (cost hours once)**: a Windows-side git checkout (SourceTree /
+  `core.autocrlf=true`) rewrites every dirty file to CRLF and can clear exec
+  bits or append `\r` to the `.smoke/*` shims (`#!/bin/sh\r` → `exec: …:
+  not found` — a fixture failure that masquerades as a plugin failure).
+  Symptoms: `git diff --stat` inflated to whole files while `git diff -w`
+  comes back empty; `file <path>` says `with CRLF line terminators`.
+  Diagnose with `git ls-files | xargs file | grep CRLF`. Fix with
+  `sed -i 's/\r$//' <files>` (and re-chmod the shims 755); files whose
+  content already matches HEAD can simply go through `git checkout --
+  <paths>`, which additionally repairs the stale index stat those files
+  strand in (`update-index --really-refresh` alone does NOT clear it). When
+  a live smoke run suddenly fails inside the wrapper's `exec` with
+  "Permission denied" / "not found", suspect this before the wrapper.
 - Headless source check without touching `~/.dsh`: `DSH_HOME=$(mktemp -d)
   <npx>/node_modules/.bin/dsh web --patch .smoke/overlay-fake-boot.yml
   --port <unused> --no-open` — inserts the row from `../lib/index.js` against
@@ -264,6 +300,24 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   spawn (success → no retries), `gateway run` repeats are just mcp-client
   backoff against the shim's forced exit 1, and settings.yaml carries a
   negative host-pushed `refreshNonce` within ~1 s of boot.
+- **Empty-home regression check**: the fake-boot boot MUST produce that
+  settings.yaml. A validation that throws at registration leaves the
+  settings gate unresolved, so the file NEVER appears and discovery never
+  runs — that was the empty-`stderrMode` `validate` regression: seeded
+  (explicit-value) boots passed while empty-home boots silently stalled.
+  If the file is missing, suspect registration (check `validate`/the
+  base-entry shape), not the discovery path.
+- **Stderr-mode live check** with the noise shim:
+  `--patch .smoke/overlay-noise.yml` boots the row against
+  `.smoke/noise-docker`, a shim that prints the marker line `NOISE-GW-LINE`
+  to stderr on every gateway spawn. Default (capture ON): the marker is
+  ABSENT from the dsh console and lands only in
+  `/tmp/dsh-docker-mcp-<serverName>-gateway-<pid>.log`. With the user layer
+  `stderrMode: console` (seed `$DSH_HOME/settings.yaml` before boot, or
+  flip the section's `stderrMode` mid-run to emulate the toggle), the
+  marker echoes on the console instead — flipping mid-run restarts the
+  gateway connection (a second log file appears). This is the UI toggle's
+  end-to-end proof.
 
 ## Install / dev notes
 

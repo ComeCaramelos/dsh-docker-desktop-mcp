@@ -108,6 +108,14 @@ const primitives = {
                     }))]
                 : [])
         ]
+    }),
+    // Switch primitive stub: a findable typed node carrying its raw props so
+    // the toggle state and the onChange wiring are assertable.
+    Switch: (props) => ({
+        kind: "jsx",
+        type: "Switch",
+        props,
+        children: undefined
     })
 };
 
@@ -117,6 +125,8 @@ const storeState = {
     profile: "",
     command: "",
     effectiveCommand: "",
+    stderrMode: "",
+    rowStderr: "log",
     profiles: [],
     lastRefreshError: "",
     discoveryRevision: 0,
@@ -207,6 +217,8 @@ const scopeSnapshot = {
         profile: "default",
         command: "",
         effectiveCommand: "/usr/bin/docker",
+        stderrMode: "",
+        rowStderr: "log",
         profiles: ["alpha", "beta"],
         refreshNonce: 0,
         lastRefreshError: "",
@@ -253,7 +265,7 @@ const ctx = {
         register: (ns, dicts) => {
             assert.equal(ns, "dockerDesktopMcp");
             assert.ok(dicts.en);
-            var required = ["title", "description", "profileLabel", "hint", "commandLabel", "commandHint", "commandPlaceholder", "refresh", "refreshing", "readOnly", "empty", "statusMissing", "statusError", "statusUnreachable", "expand", "collapse"];
+            var required = ["title", "description", "profileLabel", "hint", "commandLabel", "commandHint", "commandPlaceholder", "reduceLabel", "reduceHint", "refresh", "refreshing", "readOnly", "empty", "statusMissing", "statusError", "statusUnreachable", "expand", "collapse"];
             var enKeys = Object.keys(dicts.en).sort();
             assert.equal(JSON.stringify(enKeys), JSON.stringify(required.slice().sort()), "en key set");
             for (var i = 0; i < required.length; i++) {
@@ -340,6 +352,7 @@ function render(state) {
         useDockerMcpCard: (sel) => sel(state),
         selectProfile: (v) => scope.set("profile", v),
         setCommand: (v) => scope.set("command", v),
+        toggleStderr: () => options.inject().toggleStderr(),
         refreshProfiles: () => scope.set("refreshNonce", 123)
     });
     react.useState = _useState;
@@ -599,6 +612,44 @@ Object.assign(storeState, { writable: false });
 let readonly = walk(render(storeState)).find((n) => n.type === "input");
 assert.equal(readonly.props.disabled, true, "executable input disabled while settings are read-only");
 Object.assign(storeState, { writable: true });
+
+// ── reduce-log-output toggle ──────────────────────────────────────────────
+// The "Reduce log output" Switch. Served state: explicit `stderrMode` wins,
+// empty falls back to the row config (`rowStderr`) — the exact resolution the
+// host applies, so the Switch mirrors the live capture setting.
+{
+    tree = render(storeState);
+    let toggle = walk(tree).find((n) => n.type === "Switch");
+    assert.ok(toggle, "Switch primitive rendered once expanded");
+    assert.equal(toggle.props.checked, true, "capture is on by default (unset override, row config log)");
+    assert.equal(toggle.props.disabled, false, "switch writable while writable");
+    // flip OFF → persist console echo
+    toggle.props.onChange();
+    assert.ok(writes.some(([f, v]) => f === "stderrMode" && v === "console"), "toggling off persists console mode");
+    tree = render(storeState);
+    toggle = walk(tree).find((n) => n.type === "Switch");
+    assert.equal(toggle.props.checked, false, "switch reflects the persisted console mode");
+    // flip back ON → persist capture
+    toggle.props.onChange();
+    assert.ok(writes.some(([f, v]) => f === "stderrMode" && v === "log"), "toggling back persists log mode");
+    tree = render(storeState);
+    toggle = walk(tree).find((n) => n.type === "Switch");
+    assert.equal(toggle.props.checked, true, "switch reflects the persisted log mode");
+    // untouched toggle + row-config console → shows OFF (host fallback mirrors)
+    scopeSnapshot.value = { ...scopeSnapshot.value, stderrMode: "", rowStderr: "console" };
+    listeners.forEach((fn) => fn());
+    tree = render(storeState);
+    toggle = walk(tree).find((n) => n.type === "Switch");
+    assert.equal(toggle.props.checked, false, "row-config console reads as OFF when untouched");
+    // restore the served row default for the rest of the suite
+    scopeSnapshot.value = { ...scopeSnapshot.value, rowStderr: "log" };
+    listeners.forEach((fn) => fn());
+    // read-only disables the switch
+    Object.assign(storeState, { writable: false });
+    toggle = walk(render(storeState)).find((n) => n.type === "Switch");
+    assert.equal(toggle.props.disabled, true, "switch disabled while settings are read-only");
+    Object.assign(storeState, { writable: true });
+}
 
 // ── status dot (credentialDot pattern) ───────────────────────────────────
 // a discovery error takes the dot's aria-label + title

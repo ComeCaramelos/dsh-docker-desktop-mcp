@@ -8,7 +8,25 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildGatewaySpawn, gatewayStderrLogPath } from "../lib/index.js";
+import { buildGatewaySpawn, gatewayStderrLogPath, readPersistedStderrMode, resolveStderrMode } from "../lib/index.js";
+
+// ── effective-mode resolution: UI toggle > row config, never a third state ──
+assert.equal(resolveStderrMode("log", "console"), "log", "explicit log override wins over row config console");
+assert.equal(resolveStderrMode("console", "log"), "console", "explicit console override wins over row config log");
+assert.equal(resolveStderrMode("", "console"), "console", "untouched toggle falls back to row config");
+assert.equal(resolveStderrMode("", "log"), "log", "untouched toggle + default row config = capture");
+assert.equal(resolveStderrMode(void 0, "log"), "log", "missing override falls back");
+assert.equal(resolveStderrMode("bogus", "log"), "log", "invalid override is ignored, not trusted");
+{
+    const settings = (section) => ({ get: (name) => (name === "settings" ? { document: { "docker-desktop-mcp": section } } : void 0) });
+    assert.equal(readPersistedStderrMode(settings({ stderrMode: "console" })), "console", "persisted console selection");
+    assert.equal(readPersistedStderrMode(settings({ stderrMode: "log" })), "log", "persisted log selection");
+    assert.equal(readPersistedStderrMode(settings({ stderrMode: "" })), "", "empty persisted value means auto");
+    assert.equal(readPersistedStderrMode(settings({ stderrMode: "bogus" })), "", "invalid persisted value ignored");
+    assert.equal(readPersistedStderrMode(settings({})), "", "absent field means auto");
+    assert.equal(readPersistedStderrMode(settings(void 0)), "", "absent section means auto");
+    assert.equal(readPersistedStderrMode({ get: () => void 0 }), "", "no settings service means auto (onChange applies later)");
+}
 
 const target = { command: "/usr/bin/docker", args: ["mcp", "gateway", "run", "--profile", "demo"] };
 const options = { platform: "linux", exists: (candidate) => candidate === "/bin/sh", tmpdir: "/tmp", pid: 4321 };
