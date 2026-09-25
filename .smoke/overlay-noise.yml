@@ -1,0 +1,13 @@
+# Smoke overlay: gateway against .smoke/noise-docker, a shim that PRINTS ONE
+# stderr line per spawn so log-mode vs console-mode visibility is directly
+# observable (capture ON -> the line lands only in the gateway stderr log
+# file; capture OFF, i.e. the "Reduce log output" toggle off -> the line
+# echoes on the dsh console). The relative command resolves against the dsh
+# process cwd, so boot from the repo root.
+- insert:
+    - id: mcp-docker
+      name: '../lib/index.js'
+      config:
+        serverName: docker
+        profile: default
+        command: .smoke/noise-docker

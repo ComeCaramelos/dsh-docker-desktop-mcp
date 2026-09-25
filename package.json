@@ -24,7 +24,7 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "test": "node test/parse.test.mjs && node test/discovery.test.mjs && node test/commands.test.mjs && node test/client.test.mjs && node test/gateway-ready.test.mjs"
+    "test": "node test/parse.test.mjs && node test/discovery.test.mjs && node test/commands.test.mjs && node test/client.test.mjs && node test/gateway-ready.test.mjs && node test/gateway-stderr.test.mjs"
   },
   "dsh": {
     "bundle": {
