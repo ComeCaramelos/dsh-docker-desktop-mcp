@@ -5,20 +5,85 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
 
 ## Layout
 
-- `lib/index.js` — host half (ESM, `main`). Exports `name`, `inject`, `Config`
-  (schemastery/zod schema), `apply(ctx, config)`. Spawns the gateway via a
-  nested `@deepseek-ai/dsh-mcp-client` plugin and registers the
-  `docker-desktop-mcp` settings namespace.
-- `lib/client.js` — browser half (CJS **factory bundle**, `./client` export).
-  Hand-written, not built: it registers through
-  `window.__ModuleLoader__.load({ id, factory: (require) => … })` and seeds
-  `react`, `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-store`,
-  `@deepseek-ai/dsh-client-ui-primitives` (Menu pill selector),
-  `@deepseek-ai/dsh-client-ui-slots` via the whitelisted `require`. No bundler
-  step — keep it self-contained.
-- `test/parse.test.mjs`, `test/client.test.mjs`,
-  `test/gateway-ready.test.mjs` — plain `node:assert` scripts
-  (run via `npm test`), not a test framework.
+Two planes, each one entry file stating its surface with the behavior behind it
+in dedicated modules — the same shape as the sibling plugin `dsh-ask-before-compact`.
+
+- `src/index.ts` — host half **public surface** (TS, `tsconfig.json`, `module:
+  NodeNext`). `npm run build` emits `lib/index.js` (ESM, `main`, plus
+  `.d.ts`/maps): identity (`name`, `inject`), the zod `Config`/`SettingsSchema`,
+  `apply(ctx, config)`, and the diagnostics/test-facing helpers re-exported from
+  `src/host/*`.
+- `src/host/*` — host behavior: `apply.ts` (wiring: controller + commands +
+  section), `controller/` (live state: base layer, bridge fiber, discovery
+  chain, bounded retries, the two gates — `index.ts` assembles the face,
+  `state.ts` the mutable state + the initial resolution, `startup.ts` the
+  cold-start wait, `discovery.ts` the two runs + the bounded retry, `push.ts`
+  the host-owned nonce bump, `bridge.ts` the nested mcp-client row, `types.ts`
+  the `GatewayController` face), `settings.ts` (namespace install, validate,
+  commit routing, legacy cleanup), `commands/` (`index.ts` registration +
+  disposer retention, `profile.ts` and `refresh.ts` the two handlers),
+  `discovery.ts` (`mcp profile list` + tolerant parser), `executables.ts` (the
+  filesystem scan behind the executable catalog — probes only, never a spawn),
+  `catalog.ts` (the named rows' validation + merge rules), `gateway.ts` (spawn
+  argv + stderr wrapper + bridge config), `readiness.ts` (the bounded
+  cold-start wait), `docker.ts` (the WSL host-CLI resolution), `values.ts`
+  (precedence resolution + persisted reads), `schema.ts`, `constants.ts`,
+  `plugin-meta.ts`.
+- `src/host/types/` — the shared type sections, `index.ts` re-exporting them:
+  `config.ts` (row config + reconnect + stderr mode), `settings.ts` (the two
+  layers, the catalog rows, `settings.mutate` ops, the settings service view),
+  `services.ts` (the command shapes, the bridge view, the plugin context),
+  `gateway.ts` (spawn-target + stderr-wrapper shapes), `readiness.ts` (the
+  cold-start probe shapes) and `discovery.ts` (the two option records).
+- `src/client/*` — browser half **source** (TS, ordinary ESM modules; built by
+  `scripts/build-client.mjs`, which typechecks with `src/client/tsconfig.json`
+  (`noEmit`) and bundles `src/client/index.ts` with esbuild into the single
+  CJS-shaped **factory bundle** `lib/client.js` (the `./client` export). The
+  loader contract is preserved through esbuild's `banner`/`footer`, so the emit
+  stays `window.__ModuleLoader__.load({ id, factory: (require) => … })`; the
+  five shell-seeded modules stay external (react, react/jsx-runtime,
+  react-dom/client, `@deepseek-ai/dsh-client-store`,
+  `@deepseek-ai/dsh-client-ui-primitives`). Their types come from two places:
+  `react`/`react-dom` + their `@types/*` are devDependencies (so
+  `import … from "react"` resolves normally through `node_modules`), while the
+  two `@deepseek-ai/dsh-client-*` ids exist only in the loader's module table
+  and are typed structurally in `src/client/shell-modules.d.ts`. Modules:
+  `index.ts` (surface: `apply`, `inject`, the poll budgets), `apply.ts` (mount:
+  styles, locales, controller, card slot, composer pill slot, toast host), `controller/` (the card
+  controller — `index.ts` the class + the store wiring, `snapshot.ts` the
+  snapshot shape + how a served value projects onto it, `actions.ts` the write
+  actions, `poll.ts` the revision backstop wait + its three budgets),
+  `catalog.ts` (the browser-side mirror of the host's row rules — the two
+  halves compile into separate bundles and cannot import each other, so
+  `test/catalog.test.mjs` pins both against the same fixtures), `card/` (the
+  widget — `index.ts` the card itself, `view.ts` what one served snapshot
+  means, `picker.ts` the named catalog block (Menu pill + stock model-catalog
+  row list for the executable one; the profile block renders it with
+  `showSelector: false` — its selection is the composer pill's job),
+  `toggle.ts` the "Reduce log output" catalog block, `dialog.ts` the
+  choose-to-add fetch dialog, `icons.ts` the icon paths), `composer.ts` (the
+  composer profile pill — registered into the shell's
+  `conversation.input.left` input seat, reading the SAME controller store,
+  not a second subscription; led by the Docker brand mark — `DOCKER_PATHS` in
+  `icons.ts` (Tabler Icons' outline `brand-docker` — stroke-only, the same idiom
+  as the card's trash/close icons), rendered ONLY in the pill trigger (the
+  dropdown items and every other surface stay icon-free) as `stroke:
+  currentColor` paths on a `fill: none` 14px svg, not a filled brand glyph),
+  `toast.ts` (the body-mounted failure-toast host),
+  `styles/index.ts` (the
+  one-shot `style`-tag injection; `apply` calls it),
+  `styles/DockerMcpCard.module.css` (the stylesheet — authored as a CSS Module,
+  compiled by the `dsh-css-modules` esbuild plugin in `scripts/build-client.mjs`:
+  postcss syntax check + esbuild minify + per-file `<hash>_<local>` class scoping,
+  with `styles/css-modules.d.ts` typing the imports), `locales/*`,
+  `plugin-meta.ts`.
+- `tsconfig.json` / `src/client/tsconfig.json` — host emit / client typecheck.
+  `npm run build` runs both halves (`npm run build:client` is the browser
+  half alone); `npm test` builds first, so the emitted `lib/*.js` are always
+  what the tests load (`main`/`./client` point at `lib/`, never `src/`).
+- `test/*.test.mjs` — plain `node:assert` scripts, one file per concern, run by
+  the built-in runner (`npm test` → `npm run build && node --test`). They are
+  scripts, not `node:test` cases: no `test()` wrappers, no assertions library.
 - `.smoke/` — manual end-to-end fixtures (fake-docker shim + `--patch`
   overlays); `args.log` is the shim's invocation log (gitignored).
 
@@ -26,26 +91,176 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
 
 - **One settings namespace per host**: `docker-desktop-mcp` is fixed, not
   derived from `serverName`. A second instance must fail loud, not alias.
-- **Profile precedence** (highest first): UI selection (settings user layer in
-  `$DSH_HOME/settings.yaml`) → `DSH_DOCKER_MCP_PROFILE` env var (resolved via
+- **Profile precedence** (highest first): the settings USER LAYER (the Web UI
+  picker AND the `/docker-profile` slash command write the same `profile`
+  field — last write wins) in `$DSH_HOME/settings.yaml` →
+  `DSH_DOCKER_MCP_PROFILE` env var (resolved via
   `launchEnvironmentOf(ctx)`, never raw `process.env`) → row config
   `profile` → `"default"`. Env values not matching
   `/^[A-Za-z0-9._-]{1,128}$/` are ignored with a warning, never thrown.
+- **Slash commands** `/docker-profile` / `/docker-refresh` register through
+  `ctx.inject(["commands"], …)` — silently absent when the bundle provides no
+  `commands` service. Registration goes through a helper that retains the
+  `register()` disposers in `commandDisposers`, released by a plugin-ctx
+  `ctx.effect` cleanup: the registry owns its registrations on the COMMANDS
+  provider ctx, NOT this plugin, so without that cleanup a hot re-apply would
+  collide (duplicate name throws inside `register` — it is caught and warned,
+  keeping the earlier definitions live). Handlers must not rely on
+  `invocation.signal` (nothing is cancellable).
 - **Gateway argv shape is fixed**: `mcp gateway run --profile <id>` plus
   `extraArgs`. Discovery uses `mcp profile list --format json` with a tolerant
   parser (bare array or wrapped; ids from `id ?? profileID ?? profileId ??
   name`). Discovery errors: first non-empty stderr line, capped, plus the
   "enable the profiles feature" hint when the CLI reports an unknown
   flag/command.
+- **Gateway console noise** is handled WITHOUT touching the argv shape: the
+  MCP stdio transport spawns the gateway with `stderr: "inherit"` (SDK
+  default; the `dsh-mcp-client` bridge config exposes no stderr knob), so
+  every gateway progress line lands on the dsh console. Row config
+  `gatewayStderr` (default `"log"`) wraps the gateway spawn in `sh -c` whose
+  script `exec`s the gateway with the argv VERBATIM (positional pass-through
+  — no re-quoting, no joining), so the gateway process never sees the
+  wrapper and the constraint above holds as written. stdout stays the
+  protocol stream; stderr goes to `gatewayStderrLog` (default
+  `$TMPDIR/dsh-docker-mcp-<serverName>-gateway-<pid>.log`, truncated on every
+  spawn). `"console"` disables the wrapper (raw inherited stderr). The script
+  exits 127 with an exec-failure message on the sh's own inherited stderr
+  when the executable is missing, and falls back to plain inheritance
+  (`fallback` = `"platform"` / `"shell"`) where no POSIX shell exists — the
+  notice/warning is emitted once per apply (`noteGatewayStderr`, keyed on
+  redirect/fallback). Discovery spawns stay unwrapped (their stdio is already
+  piped/ignored). The wrapper is strictly PER-SPAWN: it rewrites only the
+  `command`/`args` of this bridge's config — no monkey-patching of the
+  shared `StdioClientTransport`, no global flags — so other plugins spawning
+  stdio servers through the same hoisted `@deepseek-ai/dsh-mcp-client`/SDK
+  keep their inherited stderr untouched (verified live: a second plain
+  `mcp-client` row's server stderr still reaches the console, and this
+  gateway's goes to the log, with zero cross-capture).
+  The bridge config object carries ONLY `dsh-mcp-client`
+  fields; `redirect`/`fallback` ride a sibling object from `bridgeConfig`,
+  never the config passed to `ctx.plugin`/`fiber.update`.
+- **UI stderr-mode toggle** ("Reduce log output" in the Web card). The
+  effective mode resolves strictly as the USER layer `stderrMode`
+  (`"log"`/`"console"`) when set, else the row config `gatewayStderr`
+  (`""` = auto) — `resolveStderrMode`, never a third state. The switch
+  writes the user layer (so it persists, like the picker/executable do);
+  its `onChange` branch is independent of the profile/command branches and
+  restarts the gateway connection via `bridge.update` (`applyStderrMode`)
+  because the spawn shape can only change by respawn — a `fiber` that is
+  still `void 0` (readiness gate) just records the mode for the first
+  start. The row default is served to clients as a STATIC base field
+  `rowStderr` (never persisted) so the switch shows the truth before any
+  write — `dsh-settings` serves base fields with the registration value,
+  so unlike the discovery fields it needs no nonce bump. `validate` MUST
+  accept `""` alongside `"log"`/`"console"`: registration resolves to
+  `""` in a fresh settings.yaml, and a strict non-empty check throws
+  inside `installSection` — a caught, console-invisible error that leaves
+  the settings gate unresolved and the plugin never discovering (this
+  bit us live: empty-home boots failed while seeded ones worked).
 - Profile **ids**, not display names, drive `--profile` and the UI selector.
+- **Named catalogs (both blocks)**: the Web card carries two catalogs —
+  `profileEntries` and `executables` — each a list of `{ id, name }` rows
+  modelled on the stock provider-models card: one row per entry (id + the
+  custom name the user gave it for the UI), a delete button, an "add" button
+  and a fetch link button (the dialog opener). `name` is UI-only — it never
+  reaches `--profile`, the spawn argv, or the slash command. The executable
+  block renders FIRST (path is the more specific, less-changing choice), then
+  the profile block. Rules that must hold:
+  - **Only the executable block renders the dropdown pill.** The profile
+    selection moved to the composer pill, so the card's profile block carries
+    NO selector — a second dropdown would be the same control twice. The
+    composer pill (see the selector-options bullet) is the card's only profile
+    selector; the executable selector stays on the card because no other
+    surface carries it. `CatalogPicker` renders the pill only when its
+    `showSelector` prop is not `false` — the profile block passes `false` and
+    keeps the field row, rows, delete/add buttons and fetch link.
+  - The dropdown's options (where rendered) are exactly the saved rows (plus
+    the current value, so a picked id never disappears). There is NO extra
+    "more options" disclosure per row — that was explicitly out of scope.
+  - The editable row boxes sit behind a collapsed native `<details>`
+    (`disclosure`/`disclosureSummary`/`disclosureBody`, uncontrolled so the
+    browser owns the open state) whose summary reads "Saved profiles" /
+    "Saved executables" plus the row count — the reference card's
+    "Customized settings" shape. Initially only the field row (its title +
+    description + the dropdown pill) and the collapsed summary are visible. The
+    **fetch link button lives INSIDE its own disclosure body**, as the first
+    child before the rows — it only acts on that catalog's rows, so it belongs
+    with them, and it is the dialog's only opener (its label is served through
+    `fetchExecutables` / `fetchProfiles`, never the old "Refresh profiles"). Only the field row, the pill and the "nothing saved yet" notice
+    stay outside, so the card's first screen keeps the selection, the
+    explanation and the empty warning visible.
+  - **No block heading**: each catalog starts directly with the stock field row
+    (`.field` → `.fieldTitle` + `.fieldDesc`) and the pill. The former head
+    (`catalogHead` → `catalogHeading` → `catalogTitle` + `catalogMeta`) is gone
+    outright — both wrappers AND their texts. The row's own title/description
+    plus the disclosure summary ("Saved executables N" / "Saved profiles N")
+    already name what the block edits, so the heading's title and meta repeated
+    them (the live complaint). None of those four classes may come back.
+  - **One rule per seam**: `.body` already carries the card's top border, so a
+    catalog block must NOT add its own `border-top` — the first block would then
+    stack two hairlines (the live complaint), which is why only `.catalog +
+    .catalog` (the seam between blocks) may draw a rule. `.disclosure` must NOT
+    draw one either: it is the seam *inside* a block, so it would double the
+    block's own spacing without separating anything.
+  - **The reduce-log-output toggle is a catalog too**: it renders as a
+    `.catalog` carrying a `.fieldTitle` and holding `.toggleField`, so the
+    section reads like the two pickers (and inherits the same seam rule).
+  - **A fetch never merges silently.** A discovery run only records what it
+    found into the base-layer candidate state (`profiles` / the in-memory
+    `executableCandidates`) — it writes NOTHING into the saved catalogs. The
+    link button opens the reference card's modal: one checkbox row per detected
+    id/path, already-saved ids come back pre-checked and DISABLED (pruning
+    stays the delete button's job — the dialog only adds), newly-found ids start
+    unchecked, a search field sifts the list, "Select all" checks the visible
+    ones, and "Add selected" merges EXACTLY the checked ids through the same
+    rules the old silent merge used (`mergeEntries`: stored rows keep their
+    order and names, the additions land last and nameless). Cancel/X write
+    nothing. The headless mirror has no dialog to answer, so `/docker-refresh`
+    performs the explicit merge itself.
+  - Row edits are local until they validate: an id the catalog cannot use is
+    dropped by `normalizeEntries`, so a blank/invalid row is never written and
+    a typed id only persists on commit.
+  - Executable discovery (`discoverExecutables`) is **fs-only** — `X_OK` probes
+    of the WSL host CLI, the platform install paths and `PATH` (the first hit
+    per name, never the whole cross product). It never spawns, so it waits only
+    on the settings gate, never on readiness, and it bumps
+    `executableDiscoveryRevision` + `refreshExecutablesNonce` instead of the
+    profile pair (two counters so a client can tell which wait finished). The
+    found paths are candidates only — the executable dialog offers them and
+    nothing lands in the rows until "Add selected".
+  - **Smoke fixtures are never executable-catalog material**: a path carrying
+    a `.smoke/` directory segment (the checkout's shims) is rejected by
+    `isValidEntryId` for the executables kind (host + client mirror,
+    `isSmokeFixturePath`), so it is never a saved row, never merged by a
+    discovery run, never a dialog candidate, and never appended as the
+    running `effectiveCommand` picker option (`SMOKE_PATH_PATTERN` in host
+    `constants.ts`). The row-config `command` is NOT validated this way —
+    smoke overlays keep spawning their shims (they only stay out of the
+    picker's option list; the pill still shows the running value).
+- **Selector options**: a healthy, non-empty discovery list is AUTHORITATIVE
+  in the Web card — `default` appears as an option only when Desktop actually
+  reports it (no phantom option). On a discovery error or an empty list the
+  store is not trustworthy, so `default` stays selectable as the fallback
+  option (the current profile stays appended too, so a picked id never
+  disappears). The same rule feeds `missing`-dot logic and the
+  `/docker-profile` usage listing.
 - **Profile switch = `fiber.update()`** on the nested mcp-client bridge
   (re-validates + restarts the connection in place). Never recreate the
   plugin row; never throw out of the settings `onChange` callback.
-- **Settings persistence boundary**: only `profile` (last UI selection) and
-  `refreshNonce` may land in `$DSH_HOME/settings.yaml`.
-  Discovery state (`profiles`, `lastRefreshError`, `discoveryRevision`)
-  lives in the composition **base layer** — the `entry` object handed to
-  `installSection` — held in memory, never persisted. But note:
+- **Settings persistence boundary**: what may land in `$DSH_HOME/settings.yaml`
+  is exactly the user-authored surface — `profile` (last UI profile selection),
+  `command` (last UI executable id), `stderrMode` (last "Reduce log output"
+  toggle write — `"log"`/`"console"`, only present once the switch was actually
+  flipped), the two saved catalogs (`profileEntries`, `executables`: arrays of
+  `{ id, name }`, the id driving the wire and `name` being only the label the
+  user chose for the UI) and the two refresh triggers (`refreshNonce`,
+  `refreshExecutablesNonce`). The executable actually in use
+  (`effectiveCommand`) plus the in-memory discovery state (`profiles`,
+  `executableCandidates`, `lastRefreshError`, `discoveryRevision`,
+  `executableDiscoveryRevision`) live in the composition **base layer** — the `entry` object handed to
+  `installSection` — held in memory, never persisted (`effectiveCommand` is
+  unset in the user layer on registration, so an accidentally-persisted one is
+  cleaned). But note:
   `dsh-settings` recomputes the `describe()` **resolved value** only on
   writes (at registration and in user-section `write`), never when the base
   entry mutates in memory — and the resolved value (NOT the `base`
@@ -122,20 +337,65 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   the `installSection` initial `onChange` switches the bridge to the
   persisted selection in place right after registration.
 - **Legacy migration**: earlier versions persisted `profiles`/
-  `lastRefreshError` into the user layer; on registration the host unsets
-  those keys via `settings.mutate` (one-time cleanup; the raw-section
-  change also re-serves the fresh base layer to open clients).
+  `lastRefreshError` into the user layer, and `effectiveCommand` (an in-memory
+  base-layer field) plus `rowStderr` (a static base mirror of `gatewayStderr`
+  meant only for serving) and the base-layer candidate lists must never be
+  persisted; on registration the host
+  unsets `profiles`, `lastRefreshError`, `discoveryRevision`,
+  `effectiveCommand`, `rowStderr` and `executableCandidates` via
+  `settings.mutate` (one-time cleanup; the raw-section change also re-serves
+  the fresh base layer to open clients).
 
 ## Client-bundle gotchas (cost real debugging time)
+
+- Editor resolution: each plane has its own config, and each config's `include`
+  must name its plane's sources, not just the entry. If it does not, tsserver
+  falls back to an inferred project for those files — with neither
+  `moduleResolution: NodeNext` + `@types/node` (host half: `node:fs`,
+  `node:path`, `process` show up as `TS2591`) nor the DOM lib (browser half:
+  `document`/`window` unresolved, plus `TS2307` on every shell-seeded id). So
+  `tsconfig.json` includes `src/host/**/*.ts` and `src/client/tsconfig.json`
+  includes `**/*.ts`. On top of that the browser half needs `react`/
+  `react-dom` + their `@types/*` as devDependencies (so `import … from "react"`
+  resolves through `node_modules`), and `/// <reference path="./shell-modules.d.ts" />`
+  (one level up once a section lives inside a module directory) in every module
+  importing the two `@deepseek-ai/dsh-client-*` ids (`card/index.ts`,
+  `card/picker.ts`, `card/toggle.ts`, `controller/index.ts`, `toast.ts`) — they
+  exist only in the loader's module table, so their ambient structural views
+  must be pulled in explicitly.
+  A nested config has one knock-on effect on the bundle: esbuild auto-discovers
+  the tsconfig next to the entry, and that config's `strict: false` drops the
+  CJS bundle's `"use strict"` directive — `scripts/build-client.mjs` therefore
+  pins `tsconfigRaw` instead of leaving it to discovery.
 
 - React children must go in `props.children` (3rd `jsx()` arg is the `key`
   slot). This bit us once with `<select>` options and a `<button>`.
 - Card renders only when its slot `key` matches a served settings namespace
   (`docker-desktop-mcp`) — registration is unconditional, rendering is
   keyed.
-- CSS is injected as a `<style>` tag from a const; no CSS modules at runtime.
+- **Stylesheet = CSS Module, not an inline const.** The card's rules live in
+  `src/client/styles/DockerMcpCard.module.css`; the build's `dsh-css-modules`
+  esbuild plugin (see `scripts/build-client.mjs`) parses it with postcss (so a
+  syntax error fails `build:client` at the source line), minifies it, scopes
+  every class name to `<hash>_<local>` (the hash is a stable FNV of the
+  repo-relative source path) and inlines it as one module exporting `cssText`
+  (the scoped CSS text) + a default class-name map. `styles/index.ts` imports
+  `cssText` and injects it as one `<style>` tag from `apply`, guarded by
+  `data-plugin-css`; every `card/` section (`index.ts`, `picker.ts`,
+  `dialog.ts`, `toggle.ts`) imports the default map and references
+  `STYLES.<local>`. The source local names (`card`, `header`, `dotError`, …)
+  never reach the DOM — only their `<hash>_<local>` form does, so the client
+  test must never assert a literal class name; it matches scoped names through
+  the `scopedClass(local)` regex helper (`[a-z0-9]{6}_<local>`).
 - Snapshot-store hook name is derived: `hooks.dockerMcpCard` →
   `useDockerMcpCard` prop.
+- The `Switch` primitive's declared surface is
+  `checked`/`label`/`disabled`/`onChange`, and it renders ONLY the control
+  (`label` becomes the control's `aria-label`). Whether it forwards unknown DOM
+  props is not part of its typed surface, so the "Reduce log output" tooltip
+  lives on the `<span className={STYLES.toggleLabel} title=…>` the card renders
+  around the control — guaranteed to reach the DOM whichever way the primitive
+  resolves.
 - A discovery wait that ends without connecting (attempts exhausted / deadline
   with the revision never advancing, or a host-published `lastRefreshError`)
   stages a one-shot `notice` on the card store (`{ seq, kind, text }`, kind
@@ -204,9 +464,24 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   `readPersistedProfile` misses and the initial `onChange` applies it — the
   two-phase spawn is normal, not a bug.
 - Observables: `.smoke/args.log` and the `docker-desktop-mcp` section of
-  `$DSH_HOME/settings.yaml` (post-migration it must be exactly
-  `refreshNonce` + `profile`; a host-pushed `refreshNonce` is NEGATIVE —
-  positive values come only from the UI).
+  `$DSH_HOME/settings.yaml` (post-migration it must be exactly `profileEntries`
+  + `executables` + `refreshNonce` + `profile` + (when a UI executable was
+  picked) `command` + (when the Reduce-log-output switch was ever flipped)
+  `stderrMode`; a host-pushed nonce is NEGATIVE — positive values come only from
+  the UI).
+- **CRLF trap (cost hours once)**: a Windows-side git checkout (SourceTree /
+  `core.autocrlf=true`) rewrites every dirty file to CRLF and can clear exec
+  bits or append `\r` to the `.smoke/*` shims (`#!/bin/sh\r` → `exec: …:
+  not found` — a fixture failure that masquerades as a plugin failure).
+  Symptoms: `git diff --stat` inflated to whole files while `git diff -w`
+  comes back empty; `file <path>` says `with CRLF line terminators`.
+  Diagnose with `git ls-files | xargs file | grep CRLF`. Fix with
+  `sed -i 's/\r$//' <files>` (and re-chmod the shims 755); files whose
+  content already matches HEAD can simply go through `git checkout --
+  <paths>`, which additionally repairs the stale index stat those files
+  strand in (`update-index --really-refresh` alone does NOT clear it). When
+  a live smoke run suddenly fails inside the wrapper's `exec` with
+  "Permission denied" / "not found", suspect this before the wrapper.
 - Headless source check without touching `~/.dsh`: `DSH_HOME=$(mktemp -d)
   <npx>/node_modules/.bin/dsh web --patch .smoke/overlay-fake-boot.yml
   --port <unused> --no-open` — inserts the row from `../lib/index.js` against
@@ -214,9 +489,50 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   spawn (success → no retries), `gateway run` repeats are just mcp-client
   backoff against the shim's forced exit 1, and settings.yaml carries a
   negative host-pushed `refreshNonce` within ~1 s of boot.
+- **Empty-home regression check**: the fake-boot boot MUST produce that
+  settings.yaml. A validation that throws at registration leaves the
+  settings gate unresolved, so the file NEVER appears and discovery never
+  runs — that was the empty-`stderrMode` `validate` regression: seeded
+  (explicit-value) boots passed while empty-home boots silently stalled.
+  If the file is missing, suspect registration (check `validate`/the
+  base-entry shape), not the discovery path.
+- **Stderr-mode live check** with the noise shim:
+  `--patch .smoke/overlay-noise.yml` boots the row against
+  `.smoke/noise-docker`, a shim that prints the marker line `NOISE-GW-LINE`
+  to stderr on every gateway spawn. Default (capture ON): the marker is
+  ABSENT from the dsh console and lands only in
+  `/tmp/dsh-docker-mcp-<serverName>-gateway-<pid>.log`. With the user layer
+  `stderrMode: console` (seed `$DSH_HOME/settings.yaml` before boot, or
+  flip the section's `stderrMode` mid-run to emulate the toggle), the
+  marker echoes on the console instead — flipping mid-run restarts the
+  gateway connection (a second log file appears). This is the UI toggle's
+  end-to-end proof.
 
 ## Install / dev notes
 
+- **Editor language service = the checkout's TypeScript**: `.vscode/settings.json`
+  sets `js/ts.tsdk.path` (the current id; VS Code deprecated the old
+  `typescript.tsdk` in favour of the unified `js/ts.*` keys, so using the old
+  name leaves a deprecation squiggle on the settings file itself) to
+  `node_modules/typescript/lib` (a VS Code old enough to lack the `js/ts.*`
+  keys needs the old `typescript.tsdk` instead — same effect, nothing else
+  changes). `@types/node@24` is
+  written against the language service in that package, so VS Code's own bundled
+  TS can fail to read it — the symptom is host-half globals (`process`,
+  `require`) showing as `TS2591: Cannot find name …` while
+  `npx tsc -p tsconfig.json --noEmit` is clean. `tsconfig.json` additionally
+  pins `"types": ["node"]` so the node globals come in regardless of how many
+  other `@types/*` packages happen to be installed. After `npm ci` the running
+  language service still needs a **TypeScript: Restart TS Server** to see the
+  newly installed types.
+- **npm 11 install-script allowlist**: dependency install scripts are skipped
+  unless the package appears in `allowScripts`, so `package.json` carries
+  `"allowScripts": { "esbuild": true }` (name-only, so esbuild bumps don't need
+  re-approving). Without it `npm ci` prints `npm warn install-scripts … esbuild
+  … not yet covered by allowScripts` — and esbuild still appears to work,
+  because `@esbuild/<platform>` lands as an optional dependency, which is why
+  the warning is easy to ignore and easy to forget to fix. Check the pending
+  list with `npm approve-scripts --allow-scripts-pending`.
 - On WSL with Windows-side pnpm, `dsh plugin add` fails (EISDIR — Windows
   pnpm cannot symlink WSL dirs). Manual install: symlink the package into
   `~/.dsh/profiles/web/node_modules/@comecaramelos/` and record
@@ -227,9 +543,11 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   Linux CLI's `~/.docker/mcp` (usually empty) and Desktop's
   `C:\Users\<you>\.docker\mcp` (where UI-created profiles live). The default
   row `command: docker` is auto-resolved by `resolveDockerCommand()` to
-  `/Docker/host/bin/docker.exe` when that path is executable on linux (only
-  the literal default is rewritten; a non-`docker` command always wins), so
-  discovery + gateway use the Desktop store with no row config. Don't try
+  `/Docker/host/bin/docker.exe` when that path is executable on linux, else
+  to the first `docker.exe` found on the launch `PATH` (WSL interop exposes it
+  there when the host-bin mount is absent) (only the literal default is
+  rewritten; a non-`docker` command always wins), so discovery + gateway use
+  the Desktop store with no row config. Don't try
   `DOCKER_CONFIG=/mnt/c/…` with the Linux CLI: it rejects the Windows store
   ("Failed to initialize: protocol not available"). A row-config `command`
   change hot-applies under `patchReload: live` (discovery + gateway restart
@@ -279,7 +597,9 @@ picker (`--profile`) on top of the stdio `docker mcp gateway run` bridge.
   stdio-bridge passthroughs.
 - Limitations: parser is tolerant of discovery JSON shapes (bare array, wrapped,
   `id`/`profileID`/`profileId`/`name` fields); degrades to "no profiles" not crash.
-  UI shows profile **ids** only, not display names.
+  The UI lists rows by their saved `name` (falling back to the id), and
+  recovered profiles land nameless; nothing about the display name reaches the
+  gateway.
 - Docker CLI: `docker mcp gateway run --profile <id>`; profile discovery
   requires the `profiles` MCP feature (`docker mcp feature enable profiles`
   on CE / `MCPWorkingSets` flag in Docker Desktop).

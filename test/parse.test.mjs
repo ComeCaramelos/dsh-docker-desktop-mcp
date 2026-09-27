@@ -35,12 +35,28 @@ assert.equal(resolveBaseProfile("default", "BAD PROFILE!"), "default", "invalid 
 assert.equal(resolveBaseProfile("cfg", 42), "cfg", "non-string env keeps config");
 
 // resolveDockerCommand: only the literal default "docker" is rewritten, only
-// on linux, only when the WSL host CLI path exists.
+// on linux, only when a Windows-side docker.exe exists (canonical host path
+// first, else the first `docker.exe` on PATH).
 assert.equal(resolveDockerCommand("docker", { platform: "linux", exists: () => true }), WSL_DOCKER_HOST_COMMAND, "linux + wsl cli present rewrites default docker");
 assert.equal(resolveDockerCommand("docker", { platform: "linux", exists: () => false }), "docker", "no wsl cli path keeps default");
 assert.equal(resolveDockerCommand("docker", { platform: "darwin", exists: () => true }), "docker", "non-linux never rewrites");
 assert.equal(resolveDockerCommand("win32-docker", { platform: "linux", exists: () => true }), "win32-docker", "explicit command always wins");
 assert.equal(resolveDockerCommand("/Docker/host/bin/docker.exe", { platform: "linux", exists: () => true }), "/Docker/host/bin/docker.exe", "explicit host path stays put");
+assert.equal(
+    resolveDockerCommand("docker", { platform: "linux", env: { PATH: "/Docker/host/bin:/usr/bin" }, exists: () => true }),
+    WSL_DOCKER_HOST_COMMAND,
+    "canonical host path wins over a PATH docker.exe",
+);
+assert.equal(
+    resolveDockerCommand("docker", { platform: "linux", env: { PATH: "/usr/bin:/opt/win/bin/" }, exists: (c) => c === "/opt/win/bin/docker.exe" }),
+    "/opt/win/bin/docker.exe",
+    "PATH docker.exe used when the host path is absent",
+);
+assert.equal(
+    resolveDockerCommand("docker", { platform: "linux", env: { PATH: "C:\\Windows\\system32:/usr/bin" }, exists: () => false }),
+    "docker",
+    "Windows-style PATH entries are skipped and nothing found keeps default",
+);
 
 // readPersistedProfile: returns the stored user-layer profile only when the
 // settings service is up and the value is a valid profile id; otherwise undefined.

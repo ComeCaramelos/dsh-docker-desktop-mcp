@@ -24,7 +24,13 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "test": "node test/parse.test.mjs && node test/discovery.test.mjs && node test/client.test.mjs && node test/gateway-ready.test.mjs"
+    "build": "tsc && npm run build:client",
+    "build:host": "tsc",
+    "build:client": "tsc -p src/client/tsconfig.json && node scripts/build-client.mjs",
+    "clean": "rm -rf lib",
+    "dev": "tsc --watch",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test"
   },
   "dsh": {
     "bundle": {
@@ -44,5 +50,18 @@
     "@deepseek-ai/dsh-mcp-client": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-subprocess": "^0.1.2-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "esbuild": "^0.25.12",
+    "postcss": "^8.5.28",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "esbuild": true
   }
 }

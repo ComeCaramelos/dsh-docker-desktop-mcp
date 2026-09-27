@@ -130,7 +130,12 @@ function makeCtx() {
             if (typeof disposer === "function") disposers.push(disposer);
         },
         inject(_deps, callback) {
-            callback({ settings });
+            if (_deps.includes("commands")) {
+                callback({ commands: { register: () => () => {} } });
+            }
+            if (_deps.includes("settings")) {
+                callback({ settings });
+            }
         },
         get(name) {
             if (name === "settings") return settings;
@@ -194,8 +199,14 @@ function bootShim({ profilesJson = "[]", profilesOk = true } = {}) {
     );
     const resolved = h.source();
     assert.equal(JSON.stringify(resolved.profiles), JSON.stringify(["alpha", "beta"]), "profiles pushed into base layer");
+    assert.equal(JSON.stringify(resolved.profileEntries ?? []), JSON.stringify([]),
+        "a run only records candidates — saved rows come from the dialog's selection, not the run");
+    assert.equal(JSON.stringify(h.settings.document[NS]?.profileEntries ?? []), JSON.stringify([]),
+        "the run never persists catalog rows");
     assert.equal(resolved.lastRefreshError, "", "successful run clears the error");
     assert.equal(resolved.discoveryRevision, 1, "one discovery run bumped the revision");
+    assert.equal(typeof resolved.executableDiscoveryRevision, "number", "the executable run counts on its own counter");
+    assert.ok(Array.isArray(resolved.executableCandidates), "the executable scan serves its candidate paths (the dialog's list)");
     const nonce = h.settings.document[NS]?.refreshNonce;
     assert.equal(typeof nonce, "number", "the host pushed a refreshNonce");
     assert.ok(nonce < 0, "host pushes are NEGATIVE so sibling instances treat them as sync markers");
