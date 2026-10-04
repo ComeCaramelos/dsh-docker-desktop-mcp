@@ -1,6 +1,6 @@
 {
   "name": "@comecaramelos/dsh-docker-desktop-mcp",
-  "description": "DSH plugin: Docker Desktop MCP gateway with a UI profile picker (wraps @deepseek-ai/dsh-mcp-client)",
+  "description": "Independent DSH plugin connecting DeepSeek Harness to the MCP Toolkit in Docker Desktop, with a UI profile picker. Not affiliated with, endorsed by, or sponsored by Docker, Inc.",
   "author": "ComeCaramelos <hello@comecaramelos.com>",
   "repository": {
     "type": "git",

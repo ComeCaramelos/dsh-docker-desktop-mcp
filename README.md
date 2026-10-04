@@ -68,4 +68,14 @@ Set `command` to an explicit path to opt out.
 
 ---
 
+> # Legal notice
+>
+> This is an independent plugin that connects DeepSeek Harness to the MCP Toolkit
+> in Docker Desktop. It is not affiliated with, endorsed by, or sponsored by
+> Docker, Inc.
+> 
+> Docker is a trademark or registered trademark of Docker, Inc. in the United
+> States and/or other countries.
+>
+
 [`CONTRIBUTING`](CONTRIBUTING.md) | [`LICENSE`](LICENSE.md)
