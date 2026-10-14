@@ -19,3 +19,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Trademark notice
+
+The license above grants rights only in the software itself. It does not grant
+any right to use Docker's trademarks or to create composite marks.
+
+Docker is a trademark or registered trademark of Docker, Inc. in the United
+States and/or other countries. This project is independent and is not
+affiliated with, endorsed by, or sponsored by Docker, Inc.
