@@ -7,7 +7,9 @@
  * therefore waits — bounded, never stalling and never throwing — for the
  * point where spawning is safe.
  */
-import { spawn } from "node:child_process";
+// `cross-spawn`, not `node:child_process`: on Windows it runs a `.cmd`/`.bat`
+// launcher (and resolves PATHEXT) the way the MCP SDK's own transport does.
+import spawn from "cross-spawn";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -26,7 +28,9 @@ import type { GatewayReadyOptions, GatewayReadyState, SocketProbeState } from ".
  */
 export function backendApiSocketPaths(platform = process.platform, homedir = os.homedir()): string[] {
     if (platform === "win32") return ["\\\\.\\pipe\\dockerBackendApiServer"];
-    if (platform === "linux") return ["/run/host-services/backend.sock", path.join(homedir, ".docker", "desktop", "backend.sock")];
+    // Linux paths whatever the host this runs on: the platform is the answer
+    // being built, so the separator is POSIX (path.join would answer `\` on Windows).
+    if (platform === "linux") return ["/run/host-services/backend.sock", path.posix.join(homedir, ".docker", "desktop", "backend.sock")];
     return [];
 }
 

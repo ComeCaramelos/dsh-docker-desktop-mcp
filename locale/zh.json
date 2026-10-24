@@ -1,0 +1,6 @@
+{
+    "meta": {
+        "title": "Docker MCP 工具包",
+        "description": "将 Docker Desktop 自带的 MCP Toolkit 网关作为 MCP 连接运行，并在其上提供配置文件选择器。与 Docker, Inc. 无关联、未经授权或赞助。"
+    }
+}

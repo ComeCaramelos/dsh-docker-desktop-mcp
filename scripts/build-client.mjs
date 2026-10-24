@@ -30,9 +30,13 @@
  */
 import { build } from "esbuild";
 import postcss from "postcss";
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
 
 const ROOT = new URL("../", import.meta.url);
 const ROOT_FS = fileURLToPath(ROOT);
@@ -146,6 +150,32 @@ function scopedName(sourcePath) {
     return hash.toString(36).padStart(6, "0").slice(0, 6);
 }
 
+/**
+ * Where the shared card machinery resolves to.
+ *
+ * `@comecaramelos/dsh-ancesters/client` answers through its export map, whose
+ * `default` is a loader *registration*, not a module surface: bundling it would
+ * find nothing to import. The shared half is meant to be bundled **into** the
+ * consumer's own bundle, so the alias sends the specifier to `client/source` —
+ * the same surface emitted as plain ESM, present in a published copy and in a
+ * linked checkout alike. When it is missing the build says so here rather than
+ * emitting a bundle whose card renders nothing.
+ */
+const ancestorsClient = resolveAncestorsClient();
+
+function resolveAncestorsClient() {
+    let entry;
+    try {
+        entry = require.resolve("@comecaramelos/dsh-ancesters/client/source");
+    } catch (error) {
+        throw new Error(`build-client: @comecaramelos/dsh-ancesters/client/source did not resolve (${String(error)}) — install or build dsh-ancesters first`);
+    }
+    if (!existsSync(entry)) {
+        throw new Error(`build-client: the shared card machinery was not found at ${entry} — build dsh-ancesters first`);
+    }
+    return entry;
+}
+
 await build({
     entryPoints: ["src/client/index.ts"],
     outfile: "lib/client.js",
@@ -155,6 +185,7 @@ await build({
     target: "es2022",
     plugins: [cssModules],
     external: BASELINE_MODULES,
+    alias: { "@comecaramelos/dsh-ancesters/client": ancestorsClient },
     sourcemap: "linked",
     sourcesContent: true,
     // The tsconfig is pinned instead of discovered. esbuild would otherwise

@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractProfileIds, listProfiles, readPersistedProfile, resolveBaseProfile, resolveDockerCommand, WSL_DOCKER_HOST_COMMAND } from "../lib/index.js";
+import { extractProfileIds, listProfiles, readConfigField, resolveDockerCommand, resolveProfileFromConfig, WSL_DOCKER_HOST_COMMAND } from "../lib/index.js";
+import { writeFakeExecutable } from "./fake-docker.mjs";
 
 const cases = [
     // bare array of objects with id
@@ -27,12 +28,31 @@ for (const [input, expected] of cases) {
     assert.deepEqual(extractProfileIds(input), expected, `extractProfileIds(${input})`);
 }
 
-// resolveBaseProfile: env var wins when valid, else fall back to configured
-assert.equal(resolveBaseProfile("default", "my_profile"), "my_profile", "valid env wins");
-assert.equal(resolveBaseProfile("default", undefined), "default", "no env keeps config");
-assert.equal(resolveBaseProfile("default", ""), "default", "empty env keeps config");
-assert.equal(resolveBaseProfile("default", "BAD PROFILE!"), "default", "invalid env keeps config");
-assert.equal(resolveBaseProfile("cfg", 42), "cfg", "non-string env keeps config");
+// resolveProfileFromConfig: the launch environment folds over the row config,
+// which folds over the schema default — an env value the profile pattern refuses
+// is ignored, never thrown. (The entry's own `extra.profile` is folded in by the
+// kind, above this — see test/kind.test.mjs.)
+const row = (profile) => ({ profile, dockerPath: "", stderrMode: "", profileEntries: [], executables: [], refreshNonce: 0, refreshExecutablesNonce: 0 });
+assert.equal(resolveProfileFromConfig(row("cfg"), "env-profile"), "env-profile", "valid env lands above the row config");
+assert.equal(resolveProfileFromConfig(row("cfg"), undefined), "cfg", "no env keeps the row config");
+assert.equal(resolveProfileFromConfig(row(""), undefined), "default", "no layer at all keeps the schema default");
+assert.equal(resolveProfileFromConfig(row("cfg"), "BAD PROFILE!"), "cfg", "invalid env is ignored, never trusted");
+assert.equal(resolveProfileFromConfig(row("cfg"), ""), "cfg", "empty env is ignored");
+assert.equal(resolveProfileFromConfig(row("cfg"), 42), "cfg", "non-string env is ignored");
+assert.equal(resolveProfileFromConfig(row(""), "env-profile"), "env-profile", "env stands above the default when the row config is silent");
+
+// readConfigField: a volatile field is handed either as a live reference or (a
+// hand-built config, e.g. in tests) as the plain value — the same read answers
+// both, and an array never aliases the reference's own list.
+assert.equal(readConfigField("plain", "fallback"), "plain", "plain value passes through");
+assert.equal(readConfigField({ get: () => "live" }, "fallback"), "live", "reference is resolved");
+assert.equal(readConfigField({ get: () => undefined }, "fallback"), "fallback", "a reference that answers nothing falls back");
+assert.equal(readConfigField(undefined, "fallback"), "fallback", "absent field falls back");
+const servedList = ["a", "b"];
+const readList = readConfigField(servedList, []);
+assert.deepEqual(readList, servedList, "the list reads back the same");
+readList.push("c");
+assert.equal(servedList.length, 2, "the read is a copy, never the reference's own array");
 
 // resolveDockerCommand: only the literal default "docker" is rewritten, only
 // on linux, only when a Windows-side docker.exe exists (canonical host path
@@ -58,17 +78,6 @@ assert.equal(
     "Windows-style PATH entries are skipped and nothing found keeps default",
 );
 
-// readPersistedProfile: returns the stored user-layer profile only when the
-// settings service is up and the value is a valid profile id; otherwise undefined.
-const ctxWith = (settings) => ({ get: (name) => (name === "settings" ? settings : void 0) });
-assert.equal(readPersistedProfile(ctxWith({ document: { "docker-desktop-mcp": { profile: "saved" } } })), "saved", "valid stored profile is returned");
-assert.equal(readPersistedProfile(ctxWith({ document: { "docker-desktop-mcp": { profile: "BAD PROFILE" } } })), undefined, "invalid stored profile is ignored");
-assert.equal(readPersistedProfile(ctxWith({ document: { "docker-desktop-mcp": { profile: 42 } } })), undefined, "non-string stored profile is ignored");
-assert.equal(readPersistedProfile(ctxWith({ document: {} })), undefined, "absent namespace is ignored");
-assert.equal(readPersistedProfile(ctxWith({ document: { "docker-desktop-mcp": "junk" } })), undefined, "non-object section is ignored");
-assert.equal(readPersistedProfile(ctxWith(void 0)), undefined, "absent settings service is ignored");
-assert.equal(readPersistedProfile({ get: () => { throw new Error("boom"); } }), undefined, "settings lookup failure is swallowed");
-
 // blank stdout → no profiles
 assert.deepEqual(extractProfileIds("   \n"), []);
 // non-JSON stdout throws (caller stores the reason)
@@ -77,31 +86,21 @@ assert.throws(() => extractProfileIds("not json"));
 // listProfiles through a fake docker shim
 const dir = mkdtempSync(join(tmpdir(), "dshdmc-"));
 try {
-    const shim = join(dir, "docker");
-    writeFileSync(
-        shim,
-        `#!/usr/bin/env node
-if (process.argv.slice(2).join(" ") === "mcp profile list --format json") {
+    // Node shims behind a sh/.cmd launcher: the same fake on POSIX and Windows.
+    const shim = writeFakeExecutable(
+        dir,
+        "docker",
+        `if (args.join(" ") === "mcp profile list --format json") {
     process.stdout.write(${JSON.stringify(JSON.stringify([{ id: "shim-profile", name: "Shim" }]))});
     process.exit(0);
 }
-process.stderr.write("unexpected args: " + process.argv.slice(2).join(" ") + "\\n");
-process.exit(3);
-`
+process.stderr.write("unexpected args: " + args.join(" ") + "\\n");
+process.exit(3);`
     );
-    chmodSync(shim, 0o755);
     const ids = await listProfiles(shim);
     assert.deepEqual(ids, ["shim-profile"], "shim discovery");
 
-    const failShim = join(dir, "docker-fail");
-    writeFileSync(
-        failShim,
-        `#!/usr/bin/env node
-process.stderr.write("unknown flag: --profile\\n");
-process.exit(1);
-`
-    );
-    chmodSync(failShim, 0o755);
+    const failShim = writeFakeExecutable(dir, "docker-fail", 'process.stderr.write("unknown flag: --profile\\n");\nprocess.exit(1);');
     await assert.rejects(
         listProfiles(failShim),
         /failed: unknown flag: --profile — enable the profiles feature first/,

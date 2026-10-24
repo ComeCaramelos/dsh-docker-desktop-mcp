@@ -9,5 +9,17 @@
 /** Cordis plugin name used by loader diagnostics. */
 export const name = "docker-desktop-mcp";
 
-/** No host services of our own: the nested bridge declares `tools`. */
-export const inject: string[] = [];
+/**
+ * The host services this component needs of its own.
+ *
+ * `mcpConnections` is what the MCP manager *provides*: it is how this component
+ * says "there is a kind of connection called `docker-profile`, and here is what
+ * one runs with". Declaring it is what the component being a component means —
+ * without the manager the injection never answers, so the row describes itself,
+ * answers its picker, and starts nothing.
+ *
+ * The command service is NOT declared: `/docker-profile` and `/docker-refresh`
+ * register through `ctx.inject(["commands"], …)` so a bundle that carries no
+ * command service leaves them absent instead of blocking the row.
+ */
+export const inject: string[] = ["mcpConnections"];

@@ -23,6 +23,14 @@
 # and a trailing CR taints shell assignments (e.g. `version=...`).
 .githooks/* text eol=lf
 
+# Smoke shims and build scripts are RUN, not read: a checkout that rewrites
+# them to CRLF breaks the shebang (`#!/bin/sh\r` answers `exec: …: not found`,
+# which looks exactly like a plugin failure — see the CRLF trap in AGENTS.md).
+# Stated per path so no content sniffing classifies them differently.
+.smoke/*  text eol=lf
+scripts/* text eol=lf
+*.sh      text eol=lf
+
 # Repository metadata.
 .gitattributes text eol=lf
 .editorconfig  text eol=lf

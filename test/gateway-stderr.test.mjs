@@ -1,85 +1,77 @@
-// Tests for gateway-stderr redirection (lib/index.js buildGatewaySpawn /
-// gatewayStderrLogPath). The console noise comes from the MCP stdio
-// transport spawning the gateway with inherited stderr; the wrapper must
-// preserve the gateway argv verbatim while sending stderr to a log file.
+// Tests for gateway-stderr routing (`buildGatewaySpawn` / `gatewayStderrLogPath`
+// / `gatewayConfig`). The console noise comes from the MCP stdio transport
+// spawning the gateway with inherited stderr; the shared wrapper launches the
+// gateway under the running Node so ONLY stderr is diverted — on every
+// platform, since Node is always there.
 // Run: node test/gateway-stderr.test.mjs
 import assert from "node:assert";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildGatewaySpawn, gatewayStderrLogPath, readPersistedStderrMode, resolveStderrMode } from "../lib/index.js";
+import { buildGatewaySpawn, gatewayConfig, gatewayStderrLogPath, resolveStderrMode } from "../lib/index.js";
 
-// ── effective-mode resolution: UI toggle > row config, never a third state ──
-assert.equal(resolveStderrMode("log", "console"), "log", "explicit log override wins over row config console");
-assert.equal(resolveStderrMode("console", "log"), "console", "explicit console override wins over row config log");
-assert.equal(resolveStderrMode("", "console"), "console", "untouched toggle falls back to row config");
-assert.equal(resolveStderrMode("", "log"), "log", "untouched toggle + default row config = capture");
-assert.equal(resolveStderrMode(void 0, "log"), "log", "missing override falls back");
-assert.equal(resolveStderrMode("bogus", "log"), "log", "invalid override is ignored, not trusted");
-{
-    const settings = (section) => ({ get: (name) => (name === "settings" ? { document: { "docker-desktop-mcp": section } } : void 0) });
-    assert.equal(readPersistedStderrMode(settings({ stderrMode: "console" })), "console", "persisted console selection");
-    assert.equal(readPersistedStderrMode(settings({ stderrMode: "log" })), "log", "persisted log selection");
-    assert.equal(readPersistedStderrMode(settings({ stderrMode: "" })), "", "empty persisted value means auto");
-    assert.equal(readPersistedStderrMode(settings({ stderrMode: "bogus" })), "", "invalid persisted value ignored");
-    assert.equal(readPersistedStderrMode(settings({})), "", "absent field means auto");
-    assert.equal(readPersistedStderrMode(settings(void 0)), "", "absent section means auto");
-    assert.equal(readPersistedStderrMode({ get: () => void 0 }), "", "no settings service means auto (onChange applies later)");
-}
+// ── effective-mode resolution: the user toggle first, the row config second,
+// never a third state. `""` means "not touched yet" and must never throw.
+assert.equal(resolveStderrMode({ stderrMode: "log", gatewayStderr: "console" }), "log", "explicit log override wins over row config console");
+assert.equal(resolveStderrMode({ stderrMode: "console", gatewayStderr: "log" }), "console", "explicit console override wins over row config log");
+assert.equal(resolveStderrMode({ stderrMode: "", gatewayStderr: "console" }), "console", "untouched toggle falls back to row config");
+assert.equal(resolveStderrMode({ stderrMode: "", gatewayStderr: "log" }), "log", "untouched toggle + capture row config = keep capturing");
+assert.equal(resolveStderrMode({ gatewayStderr: "log" }), "log", "a row that never answered the toggle falls back");
+assert.equal(resolveStderrMode({ stderrMode: "bogus", gatewayStderr: "console" }), "console", "an invalid toggle is ignored, not trusted");
 
-const target = { command: "/usr/bin/docker", args: ["mcp", "gateway", "run", "--profile", "demo"] };
-const options = { platform: "linux", exists: (candidate) => candidate === "/bin/sh", tmpdir: "/tmp", pid: 4321 };
+// ── the spawn shape. A bridging gateway that logs is launched through the
+// shared Node wrapper everywhere (the old `sh -c` script had no Windows answer);
+// the gateway's own argv passes through verbatim.
+const target = { command: "/usr/bin/docker", args: ["mcp", "gateway", "run", "--profile", "demo"], serverName: "docker" };
+const options = { execPath: "/usr/bin/node", tmpdir: "/tmp", pid: 4321 };
+const expectedLog = path.join("/tmp", "dsh-ancesters-bridge-docker-bridge-4321.log");
 
-// Default mode: wrapped in sh -c, gateway argv preserved, stderr -> log file.
 let built = buildGatewaySpawn(target, options);
-assert.equal(built.command, "/bin/sh");
-assert.equal(built.args[0], "-c");
-assert.equal(built.args[2], "docker-desktop-mcp");
-assert.equal(built.args[3], "/usr/bin/docker");
-assert.equal(built.args[4], "/tmp/dsh-docker-mcp-gateway-gateway-4321.log");
-assert.deepEqual(built.args.slice(5), target.args);
-assert.equal(built.redirect, "/tmp/dsh-docker-mcp-gateway-gateway-4321.log");
-assert.equal(built.fallback, "");
+assert.equal(built.command, "/usr/bin/node", "the wrapper runs under the same Node that runs the host");
+assert.equal(built.redirect, expectedLog, "the redirect names the log file");
+assert.equal(built.args[0].endsWith("stderr-wrapper.js"), true, "the wrapper script is the first argument");
+assert.equal(built.args[1], expectedLog, "the log path is the wrapper's first argument");
+assert.equal(built.args[2], "docker", "the bridge is named for the line the wrapper prints");
+assert.equal(built.args[3], "/usr/bin/docker", "the gateway executable follows the name");
+assert.deepEqual(built.args.slice(4), target.args, "the gateway argv reaches the wrapper verbatim");
 
-// The script keeps stdout (the protocol stream) and only routes stderr.
-assert.match(built.args[1], /exec "\$GATEWAY" "\$@" 2>\"\$LOG\"/);
-
-// console mode: raw command/args, no redirect, no fallback.
+// console mode: nothing wrapped — the gateway's progress lines keep landing on
+// the console, which is exactly what the toggle says.
 built = buildGatewaySpawn({ ...target, stderr: "console" }, options);
 assert.equal(built.command, "/usr/bin/docker");
 assert.deepEqual(built.args, target.args);
-assert.equal(built.redirect, "");
-assert.equal(built.fallback, "");
+assert.equal(built.redirect, "", "console mode redirects nothing");
 
-// Platform without a known POSIX shell: identity + platform fallback.
-built = buildGatewaySpawn(target, { ...options, platform: "win32" });
-assert.equal(built.command, "/usr/bin/docker");
-assert.deepEqual(built.args, target.args);
-assert.equal(built.fallback, "platform");
+// An explicit log path wins over the derived default.
+built = buildGatewaySpawn({ ...target, logPath: "/custom/g.log" }, options);
+assert.equal(built.args[1], "/custom/g.log");
+assert.equal(built.redirect, "/custom/g.log");
 
-// No sh found: identity + shell fallback.
-built = buildGatewaySpawn(target, { ...options, exists: () => false });
-assert.equal(built.command, "/usr/bin/docker");
-assert.deepEqual(built.args, target.args);
-assert.equal(built.fallback, "shell");
-
-// logPath override wins over the default.
-built = buildGatewaySpawn({ ...target, logPath: "/custom/path/g.log" }, options);
-assert.equal(built.args[4], "/custom/path/g.log");
-assert.equal(built.redirect, "/custom/path/g.log");
-
-// serverName shapes the default path.
-const named = gatewayStderrLogPath("desktop-docker", { tmpdir: "/tmp", pid: 7 });
-assert.equal(named, "/tmp/dsh-docker-mcp-desktop-docker-gateway-7.log");
-
-// Extra args with spaces survive as single argv entries.
+// Extra args with spaces survive as single argv entries (nothing re-quotes).
 built = buildGatewaySpawn({ ...target, args: ["mcp", "gateway", "run", "--profile", "demo", "--tools", "a b"] }, options);
-assert.deepEqual(built.args.slice(5), ["mcp", "gateway", "run", "--profile", "demo", "--tools", "a b"]);
+assert.deepEqual(built.args.slice(4), ["mcp", "gateway", "run", "--profile", "demo", "--tools", "a b"]);
 
-// ── Integration: a real sh spawn keeps stdout clean and writes stderr to
-// the log file, proving the transport-visible protocol stream survives and
-// only stderr is diverted.
+// The log file is named by the safe subset of the server name.
+const named = gatewayStderrLogPath("weird/name!", { tmpdir: "/tmp", pid: 7 });
+assert.equal(named, path.join("/tmp", "dsh-ancesters-bridge-weird-name--bridge-7.log"), "only [A-Za-z0-9_-] survives the name");
+
+// ── the pool config carries ONLY mcp-client fields — the redirect never rides
+// it (the SDK would choke on it), and the argv stays argv.
+const configured = gatewayConfig({ command: "/usr/bin/docker", profile: "demo", extraArgs: ["--tools", "a b"], stderr: "log", serverName: "docker" });
+assert.deepEqual(configured.config.args.slice(-4), ["--profile", "demo", "--tools", "a b"], "the fixed argv shape holds");
+assert.equal(configured.config.command, configured.command, "the config spawns what the spawn resolves");
+assert.ok(!("redirect" in configured.config), "the redirect stays out of the pool config");
+assert.ok(!("serverName" in configured.args), "nothing that is not argv rides the argv");
+assert.equal(configured.config.serverName, "docker", "the bridge server namespace is the entry id");
+
+// console mode: the pool config spawns the gateway directly.
+const raw = gatewayConfig({ command: "/usr/bin/docker", profile: "demo", stderr: "console", serverName: "docker" });
+assert.deepEqual(raw.config.args, ["mcp", "gateway", "run", "--profile", "demo"]);
+assert.equal(raw.redirect, "");
+
+// ── Integration: a real spawn keeps stdout clean and sends stderr to the log
+// file — the transport-visible protocol stream survives, only stderr diverted.
 if (process.platform === "linux" || process.platform === "darwin") {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-dm-stderr-"));
     try {
@@ -87,6 +79,7 @@ if (process.platform === "linux" || process.platform === "darwin") {
         const fake = path.join(dir, "docker");
         fs.writeFileSync(fake, "#!/bin/sh\nprintf 'PROTO-OK\\n'\nprintf 'NOISE-LINE\\n' >&2\nexit 0\n");
         fs.chmodSync(fake, 0o755);
+
         const wrapped = buildGatewaySpawn({ command: fake, args: ["mcp", "gateway", "run", "--profile", "demo"], stderr: "log", logPath });
         let stdout = "";
         const code = await new Promise((resolve) => {
@@ -95,39 +88,31 @@ if (process.platform === "linux" || process.platform === "darwin") {
             child.once("close", resolve);
             child.once("error", () => resolve(-1));
         });
-        assert.equal(code, 0, "wrapped gateway exited 0");
+        assert.equal(code, 0, "the wrapped gateway exits 0");
         assert.equal(stdout, "PROTO-OK\n", "stdout (the protocol stream) reaches the transport untouched");
+        assert.ok(fs.readFileSync(logPath, "utf8").includes("NOISE-LINE"), "stderr landed in the log file");
 
-        const logged = fs.readFileSync(logPath, "utf8");
-        assert.ok(logged.includes("NOISE-LINE"), "stderr landed in the log file");
-        fs.rmSync(fake);
-
-        // Missing executable: exit 127 + message on stderr (never silent).
-        const missing = buildGatewaySpawn({
-            command: path.join(dir, "definitely-absent"),
-            args: ["mcp", "gateway", "run", "--profile", "demo"],
-            stderr: "log",
-            logPath
-        });
+        // A missing executable fails loud (127) with the reason on the console
+        // stream, never silently.
+        const missing = buildGatewaySpawn({ command: path.join(dir, "definitely-absent"), args: ["mcp"], stderr: "log", logPath });
         const missingCode = await new Promise((resolve) => {
             const child = spawn(missing.command, missing.args, { stdio: ["ignore", "ignore", "ignore"] });
             child.once("close", resolve);
             child.once("error", () => resolve(-1));
         });
-        assert.equal(missingCode, 127, "missing executable fails loud with 127");
+        assert.equal(missingCode, 127, "a missing executable fails loud with 127");
 
-        // The gateway keeps its argv: echo-style shim reports $* back.
+        // The argv survives a value that carries a space.
         const argvFake = path.join(dir, "argv-echo");
-        const argvLog = path.join(dir, "argv.log");
         fs.writeFileSync(argvFake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 0\n");
         fs.chmodSync(argvFake, 0o755);
-        const argvWrapped = buildGatewaySpawn({ command: argvFake, args: ["mcp", "gateway", "run", "--profile", "demo x"], stderr: "log", logPath: argvLog });
-        const echoed = await new Promise((resolve, reject) => {
+        const argvWrapped = buildGatewaySpawn({ command: argvFake, args: ["mcp", "gateway", "run", "--profile", "demo x"], stderr: "log", logPath });
+        const echoed = await new Promise((resolve) => {
             const child = spawn(argvWrapped.command, argvWrapped.args, { stdio: ["ignore", "pipe", "ignore"] });
             let out = "";
             child.stdout.on("data", (chunk) => (out += String(chunk)));
             child.once("close", () => resolve(out));
-            child.once("error", reject);
+            child.once("error", () => resolve(""));
         });
         assert.equal(echoed, "mcp\ngateway\nrun\n--profile\ndemo x\n", "argv preserved verbatim (spaces included)");
     } finally {

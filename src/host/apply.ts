@@ -1,44 +1,44 @@
 /**
  * Host-half assembly — the wiring file.
  *
- * `apply` is deliberately the only host module that knows the four parts
- * exist; each part keeps its own behavior:
+ * `apply` is deliberately the only host module that knows the four parts exist;
+ * each part keeps its own behavior:
  *
- *   ./controller/     the live gateway state (state, startup, discovery, push, bridge)
- *   ./commands/       `/docker-profile` + `/docker-refresh`
- *   ./settings.ts     the namespace install + commit routing + cleanup
- *   ./readiness.ts    the cold-start wait the controller runs before spawning
+ *   ./controller/   the live mirror, the two runs, the bounded retry
+ *   ./settings.ts   the configuration form's attach (the shared adapter owns the
+ *                   entry-id rule, the auto page and the commit routing)
+ *   ./manager.ts    the `docker-profile` kind + the standalone-config translation
+ *   ./commands/     `/docker-profile` + `/docker-refresh`
  *
- * The ordering rule that must survive the split: read the config through
- * `controller.source()` at commit time, never capture it — cordis starts the
- * `settings` injection callback after `apply` returns, so a captured value
- * would pin every consumer to the row config and no mid-session GUI edit would
- * ever reach the running gateway.
+ * The ordering rule that must survive the split: read the row through the
+ * references at commit time, never capture them — cordis starts the injection
+ * callbacks after `apply` returns, so a captured value would pin every consumer
+ * to the row config and no later edit would reach anything.
  *
- * Mount the Docker Desktop MCP gateway and its settings-backed profile picker.
- * Profile precedence: settings user layer (UI selection) > DSH_DOCKER_MCP_PROFILE
- * env var > row config `profile` > schema default.
- * Executable precedence: the settings user-layer `command` override > the
- * auto-resolved row-config `command` (WSL host path for the literal default).
- * Stderr-mode precedence: the settings user-layer `stderrMode` (the card's
- * "Reduce log output" toggle) > the row-config `gatewayStderr`.
+ * What changed with the component model: this row **no longer starts a
+ * gateway itself**. It answers a live `docker-profile` connection instead, and
+ * answers nothing at all when no manager is mounted. Mounting therefore stands
+ * up the machine half (the mirror, the two catalogs, the two runs) and says what
+ * it can answer; whether anything runs is the pool's decision.
  *
  * @param ctx - plugin context.
- * @param config - validated row config.
+ * @param config - validated config (every volatile field a reference).
  */
-import { createGatewayController } from "./controller/index.js";
+import { createController } from "./controller/index.js";
 import { registerCommands } from "./commands/index.js";
-import { installSettingsSection } from "./settings.js";
+import { installDockerMcpForm } from "./settings.js";
+import { attachToManager } from "./manager.js";
 import type { DockerMcpConfig, PluginContext } from "./types/index.js";
 
 export function apply(ctx: PluginContext, config: DockerMcpConfig): void {
-    const controller = createGatewayController(ctx, config);
-    // Disposing this half stops any pending discovery retry; readiness must not
-    // start anything after this point.
+    const controller = createController(ctx, config);
+    // Disposing stops any pending discovery retry; no run may start after this.
     ctx.effect(() => () => controller.dispose());
-    // The gateway-start wait runs first so a settings commit racing a still
-    // cold Desktop can never schedule a blind discovery run before readiness.
+    // The machine half opens first: publish the mirror and run both scans, so
+    // the very first answer a picker reads is already there. Nothing here
+    // spawns — the readiness wait belongs to a connection's `prepare`.
     controller.start();
+    attachToManager(ctx, controller);
     registerCommands(ctx, config, controller);
-    installSettingsSection(ctx, config, controller);
+    installDockerMcpForm(ctx, controller);
 }

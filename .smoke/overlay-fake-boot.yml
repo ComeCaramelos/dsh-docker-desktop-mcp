@@ -2,6 +2,11 @@
 # docker CLI. Intended for a headless boot check against an isolated DSH_HOME
 # (the live `~/.dsh` profile patch already defines the `mcp-docker` id — use
 # `overlay-fake-env.yml` there instead).
+# NOTE (component model): a row standing on its own never spawns and never
+# runs discovery — without a manager mounted the entry stays pending, so this
+# overlay answers only the inert path. To observe argv or a gateway spawn,
+# boot `overlay-manager.yml` (same shape, plus a seeded docker-profile entry).
+
 - insert:
     - id: mcp-docker
       name: '../lib/index.js'

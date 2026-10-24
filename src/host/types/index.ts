@@ -7,22 +7,24 @@
  * shapes, and the discovery-run options. Nothing here decides behavior — every
  * module behind this surface imports its own section.
  */
-export type { DockerMcpConfig, GatewayStderrMode, ReconnectConfig } from "./config.js";
+export type { ConfigField, DockerMcpConfig, GatewayStderrMode, ReconnectConfig } from "./config.js";
 export type {
     CatalogEntry,
-    SettingsBaseLayer,
-    SettingsOp,
-    SettingsResolved,
-    SettingsService,
-    SettingsUserFields
+    ConfigLayerFields,
+    ConfigLayers,
+    ConfigLiveFields,
+    ConfigUserFields,
+    SettingsFormRow,
+    SettingsForms,
+    SettingsPathOp
 } from "./settings.js";
-export type { CommandDefinition, CommandInvocation, CommandResult, McpBridge, PluginContext } from "./services.js";
+export type { CommandDefinition, CommandInvocation, CommandResult, PluginContext } from "./services.js";
 export type {
     GatewaySpawnOptions,
     GatewaySpawnResult,
     GatewaySpawnTarget,
     GatewayStderrLogPathOptions,
-    GatewayStderrNotice
+    GatewayConnection
 } from "./gateway.js";
 export type { GatewayReadyOptions, GatewayReadyState, SocketProbeState } from "./readiness.js";
-export type { DiscoveryOptions, ExecutableDiscoveryOptions, WslDockerOptions } from "./discovery.js";
+export type { ExecutableDiscoveryOptions, WslDockerOptions } from "./discovery.js";

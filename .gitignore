@@ -15,7 +15,8 @@ dist/
 lib/
 
 # Docs
-docs/
+docs/*
+!docs/knowledge/
 
 # npm
 *.tgz

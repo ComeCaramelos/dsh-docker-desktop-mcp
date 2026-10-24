@@ -1,135 +1,103 @@
 /**
- * Gateway spawn construction — the argv shape and the stderr wrapper.
+ * Gateway spawn construction — the argv shape and where its stderr goes.
  *
- * The argv stays exactly `mcp gateway run --profile <id> [extraArgs]`. The
- * only way to keep the console quiet without touching that shape is to wrap
- * the spawn in `sh -c`, whose script `exec`s the gateway with the argv passed
- * positionally (never re-quoted, never joined) so the gateway process never
- * sees the wrapper. stdout stays the MCP protocol stream; stderr lands in a
- * per-spawn log file.
+ * The argv stays exactly `mcp gateway run --profile <id> [extraArgs]` — the one
+ * shape the gateway accepts and the only place the profile id is read from. What
+ * used to keep the console quiet was a `sh -c` wrapper; since dsh 0.2 that job
+ * belongs to `@comecaramelos/dsh-ancesters`' `buildSpawn`, which wraps the spawn
+ * in one Node wrapper (`process.execPath` + a shipped script) on Linux, WSL and
+ * Windows alike. That is why this module no longer has a shell script, a shell
+ * probe or a `fallback` answer: there is nothing platform-dependent left to fall
+ * back from, and the log file lands in ancestros' private per-host directory
+ * (`<tmpdir>/dsh-ancesters-bridge-XXXX/<server>-bridge.log`) instead of the flat
+ * `dsh-docker-mcp-…-gateway-<pid>.log` file the `sh -c` era wrote.
+ *
+ * The wrapper is strictly per-spawn: it rewrites only this bridge's command and
+ * args, never a shared transport.
  */
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { SH_PATH_CANDIDATES } from "./constants.js";
+import { buildSpawn, stderrLogPath } from "@comecaramelos/dsh-ancesters/host";
 import type {
-    DockerMcpConfig,
+    GatewayConnection,
     GatewaySpawnOptions,
     GatewaySpawnResult,
+    GatewayStderrMode,
     GatewaySpawnTarget,
-    GatewayStderrMode
+    ReconnectConfig
 } from "./types/index.js";
 
 /**
- * The `sh -c` script behind a redirecting gateway spawn: keep stdout as the
- * MCP protocol stream (only stdout carries it), send stderr to the captured
- * log file, and fail with 127 (and a message ON stderr) if the executable
- * is missing — otherwise the transport would report a bare exit code and
- * the reason would be buried in the log file.
- */
-const GATEWAY_STDERR_SHELL_SCRIPT = [
-    'GATEWAY="$1"',
-    'LOG="$2"',
-    "shift 2",
-    'command -v "$GATEWAY" >/dev/null 2>&1 || { echo "docker-desktop-mcp: gateway executable not found: $GATEWAY" >&2; exit 127; }',
-    'exec "$GATEWAY" "$@" 2>"$LOG"'
-].join("; ");
-
-/**
- * Default location of the gateway stderr log:
- * `<tmpdir>/dsh-docker-mcp-<serverName>-gateway-<pid>.log`. One file per
- * running dsh instance; the wrapper truncates it on every gateway spawn, so
- * it always holds the latest gateway session's output.
+ * Default location of the gateway stderr log — ancestros' private bridge log for
+ * this server namespace.
  * @param serverName - the bridge server namespace.
  * @param options - tmpdir/pid overrides for tests and diagnostics.
  */
 export function gatewayStderrLogPath(serverName: unknown, options: { tmpdir?: string; pid?: number } = {}): string {
-    const tmp = typeof options.tmpdir === "string" && options.tmpdir !== "" ? options.tmpdir : os.tmpdir();
-    const pid = options.pid === void 0 ? process.pid : options.pid;
-    const safe = typeof serverName === "string" ? serverName.replace(/[^A-Za-z0-9_-]/gu, "-") : "gateway";
-    return path.join(tmp, `dsh-docker-mcp-${safe}-gateway-${pid}.log`);
+    return stderrLogPath(serverName, options);
 }
 
 /**
- * Build the stdio spawn target for one gateway run, honouring
- * `gatewayStderr`. The MCP stdio transport spawns the gateway with the
- * default `stderr: "inherit"`, so every progress line the gateway prints
- * lands directly on the dsh console — that is what makes connection feel
- * loud. "log" (default) wraps the spawn in `sh -c`: stdout keeps flowing as
- * the MCP protocol stream, and stderr is redirected into a log file.
- * "console" returns the raw command/args (inherited console output). When no
- * POSIX shell is available the redirect is impossible: the raw command is
- * returned with `fallback` set, and `apply` warns once.
+ * Build the stdio spawn target for one gateway run, honouring the effective
+ * stderr mode. `"log"` (the default) routes the gateway's stderr into the log
+ * file; `"console"` leaves the raw command in place, so the gateway's progress
+ * lines keep landing on the dsh console.
  * @param target - { command, args, stderr?, logPath?, serverName? }.
- * @param options - platform/exists/tmpdir/pid overrides for tests.
- * @returns { command, args, redirect, fallback } — the log file when
- * redirected ("" otherwise) and why not ("" when redirected or console).
+ * @param options - execPath/tmpdir/pid overrides for tests and diagnostics.
+ * @returns { command, args, redirect } — the log file when redirected, "" when
+ * the console echoes. The shape no longer carries a `fallback`: there is no
+ * platform without a wrapper any more.
  */
 export function buildGatewaySpawn(target: GatewaySpawnTarget, options: GatewaySpawnOptions = {}): GatewaySpawnResult {
-    const raw = { command: target.command, args: [...target.args], redirect: "", fallback: "" };
-    const mode = target.stderr === void 0 ? "log" : target.stderr;
-    if (mode !== "log") return raw;
-    const platform = options.platform === void 0 ? process.platform : options.platform;
-    if (platform !== "linux" && platform !== "darwin") return { ...raw, fallback: "platform" };
-    const exists =
-        options.exists === void 0
-            ? (candidate: string) => {
-                  try {
-                      fs.accessSync(candidate, fs.constants.X_OK);
-                      return true;
-                  } catch {
-                      return false;
-                  }
-              }
-            : options.exists;
-    const sh = SH_PATH_CANDIDATES.find((candidate) => exists(candidate));
-    if (sh === void 0) return { ...raw, fallback: "shell" };
-    const logPath =
-        typeof target.logPath === "string" && target.logPath !== ""
-            ? target.logPath
-            : gatewayStderrLogPath(target.serverName ?? "gateway", options);
-    return {
-        command: sh,
-        args: ["-c", GATEWAY_STDERR_SHELL_SCRIPT, "docker-desktop-mcp", target.command, logPath, ...target.args],
-        redirect: logPath,
-        fallback: ""
-    };
+    const mode: GatewayStderrMode = target.stderr === void 0 ? "log" : target.stderr;
+    const spawned = buildSpawn(
+        {
+            command: target.command,
+            args: [...target.args],
+            stderr: mode,
+            ...(typeof target.logPath === "string" && target.logPath !== "" ? { logPath: target.logPath } : {}),
+            ...(target.serverName === void 0 ? {} : { serverName: target.serverName })
+        },
+        {
+            ...(options.execPath === void 0 ? {} : { execPath: options.execPath }),
+            ...(options.tmpdir === void 0 ? {} : { tmpdir: options.tmpdir }),
+            ...(options.pid === void 0 ? {} : { pid: options.pid })
+        }
+    );
+    return { command: spawned.command, args: spawned.args, redirect: spawned.redirect };
 }
 
 /**
- * Build the stdio config for the nested mcp-client bridge for one profile and
- * one executable + effective stderr mode. Args keep the user's original
- * invocation shape:
- * `docker mcp gateway run --profile <profile> [extraArgs]`, run as `command`
- * — wrapped through {@link buildGatewaySpawn} so the gateway's stderr lands
- * in a log file instead of the console when the mode is "log". The returned
- * config carries only dsh-mcp-client fields; `redirect`/`fallback` describe
- * the wrapper for the host's own diagnostics.
+ * The stdio config for one gateway connection: the fixed argv, wrapped so the
+ * gateway's stderr lands in a log file when the mode says "log". The invocation
+ * shape stays verbatim:
+ * `docker mcp gateway run --profile <profile> [extraArgs]`.
+ *
+ * The returned `config` carries ONLY `dsh-mcp-client` fields — what the manager
+ * hands the pool and the pool hands `ctx.plugin(McpClient, …)`. `redirect`
+ * describes the wrapper for the host's own diagnostics and the kind's `note`; it
+ * never rides the config.
  */
-export function bridgeConfig(entry: DockerMcpConfig, profile: string, command: string, stderrMode?: GatewayStderrMode) {
-    const spawned = buildGatewaySpawn(
-        {
-            command,
-            args: ["mcp", "gateway", "run", "--profile", profile, ...entry.extraArgs],
-            stderr: stderrMode === void 0 ? entry.gatewayStderr : stderrMode,
-            logPath: entry.gatewayStderrLog,
-            serverName: entry.serverName
-        },
-        { serverName: entry.serverName }
-    );
+export function gatewayConfig(connection: GatewayConnection): GatewaySpawnResult & { config: Record<string, unknown> } {
+    const spawned = buildGatewaySpawn({
+        command: connection.command,
+        args: ["mcp", "gateway", "run", "--profile", connection.profile, ...(connection.extraArgs ?? [])],
+        stderr: connection.stderr === void 0 ? "log" : connection.stderr,
+        ...(connection.logPath === void 0 ? {} : { logPath: connection.logPath }),
+        serverName: connection.serverName
+    });
     return {
+        command: spawned.command,
+        args: spawned.args,
+        redirect: spawned.redirect,
         config: {
-            serverName: entry.serverName,
+            serverName: connection.serverName,
             transport: "stdio" as const,
             command: spawned.command,
             args: spawned.args,
-            env: entry.env,
-            cwd: entry.cwd,
-            toolCallTimeoutMs: entry.toolCallTimeoutMs,
-            failOnStartupError: entry.failOnStartupError,
-            reconnect: entry.reconnect
-        },
-        redirect: spawned.redirect,
-        fallback: spawned.fallback
+            ...(connection.env === void 0 ? {} : { env: connection.env }),
+            ...(connection.cwd === void 0 ? {} : { cwd: connection.cwd }),
+            ...(connection.toolCallTimeoutMs === void 0 ? {} : { toolCallTimeoutMs: connection.toolCallTimeoutMs }),
+            ...(connection.failOnStartupError === void 0 ? {} : { failOnStartupError: connection.failOnStartupError }),
+            ...(connection.reconnect === void 0 ? {} : { reconnect: connection.reconnect })
+        }
     };
 }

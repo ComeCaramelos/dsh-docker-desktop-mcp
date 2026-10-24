@@ -1,15 +1,21 @@
 /**
  * Host-half fixed identifiers, budgets and validation patterns.
  *
- * The strings are a public contract — the settings namespace is both the
+ * The strings are a public contract — the profile entry id is both the
  * persistence key and the Web card's slot key — and the budgets are what the
  * README and the tests quote, so they live here once and every module imports
  * rather than repeats them.
  */
 import type { GatewayStderrMode } from "./types/index.js";
 
-/** Fixed settings namespace; also the client card's slot key. */
-export const SETTINGS_NAMESPACE = "docker-desktop-mcp";
+/**
+ * The profile entry id this bundle's patch declares (`cordis.patch.yml`). Since
+ * dsh 0.2.0 it is the key every read and write goes through: the configuration
+ * form's entry, the row the Plugins page renders, and the client card's slot key
+ * (the page composes it as `<package name>#<row id>`, so the client mirrors the
+ * id itself and the package name only scopes it).
+ */
+export const ENTRY_ID = "mcp-docker";
 
 /** Environment variable that seeds the base profile for one dsh run. */
 export const PROFILE_ENV_VAR = "DSH_DOCKER_MCP_PROFILE";
@@ -30,6 +36,14 @@ export const COMMAND_PATTERN = /^[\t -~¡-￿]{1,1024}$/;
 
 /** An optional path: a command-shaped string, or empty for auto-resolve. */
 export const OPTIONAL_PATH_PATTERN = /^(?:[\t -~¡-￿]{1,1024})?$/;
+
+/**
+ * The card's "Reduce log output" toggle: "log" captures the gateway stderr,
+ * "console" echoes it, and the empty string means "follow the row config".
+ * The empty form MUST stay accepted — a row that never flipped the switch
+ * resolves to "" and a strict non-empty check throws inside the commit.
+ */
+export const STDERR_MODE_PATTERN = /^(?:log|console)?$/;
 
 /**
  * Paths carrying a `.smoke/` directory segment belong to the checkout's smoke
@@ -69,11 +83,58 @@ export const GATEWAY_READY_TIMEOUT_MS = 15000;
 /** One connect attempt at a backend API socket path is capped at this. */
 export const BACKEND_API_CONNECT_TIMEOUT_MS = 2000;
 
-/** Candidate POSIX shells used only to redirect the gateway's stderr. The
- * wrapper `exec`s the gateway with its original argv, so the gateway process
- * never sees the wrapper and the argv shape (`mcp gateway run --profile
- * <id>` + extraArgs) is untouched — the hard constraint holds verbatim. */
-export const SH_PATH_CANDIDATES = ["/bin/sh", "/usr/bin/sh"];
+/**
+ * The manager kind this component registers (`mcpConnections.registerKind`). It
+ * owns the live connection: the pool starts, switches and stops the gateway,
+ * and the component only answers `prepare` (readiness + discovery) and
+ * `resolve` (the fixed argv). A row that registers nothing runs nothing — that
+ * is what "the component is off" means.
+ */
+export const KIND_ID = "docker-profile";
+
+/** Human label the manager's kind picker shows. */
+export const KIND_LABEL = "Docker MCP Toolkit (Docker Desktop profiles)";
+
+/** One-line summary the picker shows under the label. */
+export const KIND_SUMMARY = "Runs `docker mcp gateway run --profile <id>` against the profile selected here.";
+
+/** One connection of this kind, at most: the composer pill always points at it. */
+export const KIND_MAX_ENTRIES = 1;
+
+/** The `extra` keys the kind's fields write. */
+export const KIND_FIELDS = {
+    profile: "profile",
+    dockerPath: "dockerPath",
+    extraArgs: "extraArgs",
+    stderrMode: "stderrMode"
+} as const;
+
+/**
+ * Stroke paths for the manager's composer pill (a 24×24 box). Mirrored from the
+ * client's `DOCKER_PATHS` — same whale, same idiom — because the host half
+ * publishes it through the kind and the two halves compile apart;
+ * `test/client.test.mjs` pins the mirror.
+ */
+export const DOCKER_MARK_PATHS: readonly string[] = [
+    "M22 12.54c-1.804 -.345 -2.701 -1.08 -3.523 -2.94c-.487 .696 -1.102 1.568 -.92 2.4c.028 .238 -.32 1 -.557 1h-14c0 5.208 3.164 7 6.196 7c4.124 .022 7.828 -1.376 9.854 -5c1.146 -.101 2.296 -1.505 2.95 -2.46z",
+    "M5 10h3v3h-3z",
+    "M8 10h3v3h-3z",
+    "M11 10h3v3h-3z",
+    "M8 7h3v3h-3z",
+    "M11 7h3v3h-3z",
+    "M11 4h3v3h-3z",
+    "M4.571 18c1.5 0 2.047 -.074 2.958 -.78",
+    "M10 16l0 .01"
+];
+
+/** npm id of the bundle that inserts this component's row. */
+export const MANAGER_BUNDLE_ID = "@comecaramelos/dsh-mcp-manager-bundle";
+
+/**
+ * One user-authored field: set once a standalone row is dismissed and never
+ * proposed again (D4 — nothing lands in `servers` without a click).
+ */
+export const MIGRATION_DISMISSED_FIELD = "migrationDismissed";
 
 /**
  * Windows-side Docker CLI path exposed inside WSL. Docker Desktop keeps its

@@ -17,11 +17,6 @@ export type CommandDefinition = {
     handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult>;
 };
 
-/** Nested `dsh-mcp-client` bridge fiber (only `update` is consumed). */
-export interface McpBridge {
-    update(config: unknown): unknown;
-}
-
 /**
  * Plugin context as consumed by this host half. `ctx.effect`, `ctx.inject`,
  * `ctx.plugin`, and `ctx.get` all come from cordis `Context` itself.

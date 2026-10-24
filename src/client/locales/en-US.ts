@@ -1,56 +1,52 @@
 /**
  * English copy — the dictionary every other tag falls back to.
  *
- * Every string the card renders lives here; the widget itself stays copy-free.
- * Add a locale by dropping a sibling file and registering it in ./index.ts.
+ * The tag is `en-US` because that is the tag the shared card machinery answers
+ * under: `mergeDictionaries` merges **per locale**, so a plugin that names its
+ * dictionary `en` while the shared half says `en-US` would have its copy
+ * invisible the moment the page resolves `en-US`, and the dialog's own controls
+ * would answer nothing. The whole dictionary set therefore stands under one tag,
+ * the shared keys underneath it and the plugin's wording winning any collision.
+ *
+ * Every string the card renders lives here; the block itself stays copy-free.
+ * What is **not** here is anything about a running connection: the profile and
+ * the executable one runs with are the manager's card's copy, not this row's.
  */
-export const en = {
-    title: "Docker Desktop MCP",
-    description: "Profile and executable for the docker mcp gateway connection",
+export const enUS = {
+    title: "Docker MCP Toolkit",
+    description: "The profiles and executables a Docker MCP Toolkit connection picks from",
+
+    summaryProfiles: "Profiles",
+    summaryExecutables: "Executables",
+
+    profileIdLabel: "Profile id",
+    profileNameLabel: "Display name",
     profileRows: "Saved profiles",
-    profileLabel: "Profiles",
-    composerAria: "Docker MCP profile: {name}",
-    composerTitle: "Docker Desktop MCP profile",
-    hint: "The profiles saved here fill the dropdown of the profile picker in the chat composer. Selecting the running profile there reconnects the gateway.",
-    profileIdLabel: "Profile ID",
-    profileIdPlaceholder: "Profile ID",
-    profileNamePlaceholder: "Display name",
+    profileEmpty: "No profiles saved yet. Use “Fetch profiles” to add the ones this gateway can see.",
     addProfile: "Add profile",
-    removeProfile: "Delete profile",
-    executableRows: "Saved executables",
-    executableLabel: "Docker executable",
-    executableHint: "The executable used for profile discovery and the gateway spawn. Selecting one restarts the connection.",
+
     executableIdLabel: "Executable path",
-    executableIdPlaceholder: "Path to the docker CLI",
     executableNameLabel: "Display name",
-    namePlaceholder: "Display name",
+    executableRows: "Saved executables",
+    executableEmpty: "No executables saved. Use “Fetch executables” to add the docker CLI this gateway can run.",
     addExecutable: "Add executable",
-    removeExecutable: "Delete executable",
-    fetchExecutables: "Fetch executables",
+
+    removeEntry: "Remove",
+    namePlaceholder: "Display name",
+
     fetchProfiles: "Fetch profiles",
-    executableEmpty: "No executables saved. Use “Fetch executables”, or add the docker CLI path by hand.",
-    fetching: "Fetching…",
+    fetchExecutables: "Fetch executables",
     dialogProfilesTitle: "Choose profiles to add",
-    dialogProfilesDescription: "These are the profiles this Docker Desktop has available. Choose the ones to add.",
+    dialogProfilesDescription: "These are the profiles the gateway can see. Choose the ones to save.",
     dialogExecutablesTitle: "Choose executables to add",
-    dialogExecutablesDescription: "These are the docker executables found on this machine. Choose the ones to add.",
-    dialogEmpty: "Nothing matches your search.",
+    dialogExecutablesDescription: "These are the docker executables found on this machine. Choose the ones to save.",
     searchProfiles: "Search profiles",
     searchExecutables: "Search executables",
+
+    // Drawn by the shared dialog. `cancel`, `close` and `addSelected` come from
+    // the shared dictionary; `selectAll`, `dialogEmpty` and `candidateSaved` are
+    // not shared at all, so they ride here — the wording is a catalog's own.
     selectAll: "Select all",
-    addSelected: "Add selected",
-    candidateSaved: "Saved",
-    close: "Close",
-    cancel: "Cancel",
-    reduceLabel: "Reduce log output",
-    reduceTitle: "Capture the gateway's progress lines into the plugin's stderr log",
-    reduceHint:
-        "Keeps the gateway's progress logs out of the dsh console by capturing them into the plugin's stderr log file. Turn it off to debug the raw gateway output; switching restarts the gateway connection.",
-    readOnly: "Settings are read-only in this deployment.",
-    empty: "No profiles saved yet. Use “Fetch profiles” to choose the profiles the gateway runs with.",
-    statusMissing: "Profile not found",
-    statusError: "Error",
-    statusUnreachable: "Docker Desktop did not respond to profile discovery — check that it is running.",
-    expand: "Expand",
-    collapse: "Collapse"
+    dialogEmpty: "Nothing matches your search.",
+    candidateSaved: "Saved"
 };

@@ -1,172 +1,85 @@
 /**
- * The `docker-desktop-mcp` settings section.
+ * Host half — the configuration form.
  *
- * Installs the namespace the Web GUI card edits, and routes every commit into
- * the controller: a switch of the profile or executable, a stderr-mode toggle,
- * or a refresh request. Two contract details decide the shape of this module:
+ * Since dsh 0.2 the card edits the **row configuration** through the profile's
+ * configuration form: one `Config` (./schema.ts), keyed by the row's profile
+ * entry id. What used to be three hand-rolled jobs — the entry-id rule, keeping
+ * the generated page off, and filtering which commit paths mean anything — now
+ * belongs to `@comecaramelos/dsh-ancesters`' `attachSettingsForm`, which owns
+ * all three invariants (identity, `auto: false` once per fiber, user-field
+ * routing) so no consumer can repeat them wrong.
  *
- * - `installSection` runs `hooks.onChange()` synchronously at registration,
- *   which is how a persisted profile/executable/stderr mode lands on the FIRST
- *   connection when the settings service is already up (the cold path is
- *   `readPersisted*` in ./values.ts).
- * - The served `describe()` value is recomputed only when the USER section is
- *   written, so base-layer-only state (discovery results) reaches clients
- *   through the host's own negative `refreshNonce` bump — owned by the
- *   controller and pushed after every run.
+ * What stays here is only what is specific to this row: **which** fields the
+ * card edits, and what each commit means. The fields a card writes used to
+ * include the profile, the executable and the stderr mode; those belong to the
+ * `docker-profile` **connection** now (the manager's entry owns them), so this
+ * row's form owns what the machine answers — the two named catalogs and the two
+ * fetch triggers — plus one dismissal flag the proposal needs.
  */
-import { COMMAND_PATTERN, PROFILE_PATTERN, SETTINGS_NAMESPACE } from "./constants.js";
-import { SettingsSchema } from "./schema.js";
-import { resolveEffectiveCommand, resolveStderrMode } from "./values.js";
-import type { DockerMcpConfig, PluginContext, SettingsOp, SettingsService, SettingsResolved } from "./types/index.js";
-import type { GatewayController } from "./controller/index.js";
+import { attachSettingsForm } from "@comecaramelos/dsh-ancesters/host";
+import type { SettingsFormHandle } from "@comecaramelos/dsh-ancesters/host";
+import { liveMirrorKeys, readConfigField } from "./values.js";
+import type { Controller } from "./controller/index.js";
+import type { DockerMcpConfig, PluginContext } from "./types/index.js";
 
-/** Base-layer-only keys earlier versions persisted into the user layer. */
-const PERSISTED_BASE_KEYS = ["profiles", "lastRefreshError", "discoveryRevision", "effectiveCommand", "rowStderr", "executableCandidates"] as const;
+/** The fields the card edits. A commit touching nothing here changes nothing
+ * this component does, which is what keeps a live publish out of the router. */
+export const USER_FIELDS = ["profileEntries", "executables", "refreshNonce", "refreshExecutablesNonce", "migrationDismissed"] as const;
+
+/** Every live-only key the row must never persist (the unset half of every
+ * persisted write). */
+export const LIVE_MIRROR_KEYS = liveMirrorKeys();
 
 /**
- * Validate the resolved settings value.
- *
- * `stderrMode` MUST accept the empty string alongside "log"/"console": a fresh
- * `settings.yaml` resolves it to "", and a strict non-empty check throws inside
- * `installSection` — a caught, console-invisible error that leaves the settings
- * gate unresolved, so the plugin never discovers (this bit us live: empty-home
- * boots failed while seeded ones worked).
- *
- * The two catalog lists are NOT validated here: every row is normalized when
- * read/merged (see ./catalog.ts), so an odd persisted row can never throw its
- * way into the settings gate.
- */
-export function validateSettings(value: SettingsResolved): void {
-    if (!PROFILE_PATTERN.test(value.profile)) {
-        throw new Error(`settings "${SETTINGS_NAMESPACE}": profile must match ${PROFILE_PATTERN}`);
-    }
-    if (value.command !== "" && !COMMAND_PATTERN.test(value.command)) {
-        throw new Error(`settings "${SETTINGS_NAMESPACE}": command must be a single trimmed path/command with no control characters`);
-    }
-    if (value.stderrMode !== "" && value.stderrMode !== "log" && value.stderrMode !== "console") {
-        throw new Error(`settings "${SETTINGS_NAMESPACE}": stderrMode must be "log", "console" or empty (row-config default)`);
-    }
-}
-
-/**
- * The per-apply commit router, created by {@link installSettingsSection}.
- *
- * The refresh trigger: a POSITIVE nonce change is a user refresh; the FIRST
- * commit is not (the readiness continuation schedules that run instead) and a
- * value this instance pushed itself (or echoed) is not either. A NEGATIVE
- * change this instance did not write came from a SIBLING instance sharing the
- * same `settings.yaml` and is answered with an echo run — never broadcast.
- */
-export type SettingsCommitRouter = (current: SettingsResolved) => void;
-
-/**
- * Build the commit router for one apply.
- *
- * @param config - validated row config.
- * @param controller - the live gateway controller.
- */
-export function createSettingsRouter(config: DockerMcpConfig, controller: GatewayController): SettingsCommitRouter {
-    /** Last observed refreshNonce; `undefined` until the first settings commit. */
-    let lastNonce: number | undefined = void 0;
-    /** Same for the executable-catalog trigger. */
-    let lastExecNonce: number | undefined = void 0;
-
-    return (current) => {
-        // Executable-override changes (including an empty value that falls back
-        // to the auto-resolved row config) switch the bridge AND re-discover: a
-        // different executable reads a different profile store. A
-        // same-executable profile change only switches. Order matters: the
-        // executable switch already updates the running profile, so skip the
-        // profile-only switch when both land in one commit.
-        const nextCommand = resolveEffectiveCommand(current.command, config.command);
-        const commandChanged = nextCommand !== controller.runningCommand;
-        if (commandChanged) {
-            controller.switchConnection(current.profile, nextCommand);
-            // A live bridge must restart its discovery on the new executable;
-            // while the first start is still gated on readiness the scheduled
-            // run already reads the updated executable, so an extra run would be
-            // redundant.
-            if (controller.started) void controller.runDiscovery();
-        } else if (current.profile !== controller.runningProfile) controller.switchProfile(current.profile);
-
-        // The "Reduce log output" toggle lives here too: a change of the
-        // effective stderr mode restarts the gateway connection with/without
-        // the stderr-capturing wrapper, and is independent of the profile and
-        // executable branches above.
-        const nextStderrMode = resolveStderrMode(current.stderrMode, config.gatewayStderr);
-        if (nextStderrMode !== controller.runningStderrMode) controller.applyStderrMode(nextStderrMode);
-
-        if (current.refreshNonce !== lastNonce) {
-            const firstCommit = lastNonce === void 0;
-            lastNonce = current.refreshNonce;
-            if (!firstCommit && current.refreshNonce !== controller.pushedNonce) {
-                if (typeof current.refreshNonce === "number" && current.refreshNonce < 0) void controller.runDiscovery({ echo: current.refreshNonce });
-                else void controller.runDiscovery();
-            }
-        }
-
-        // The executable catalog's own refresh trigger: same sign convention as
-        // the profile nonce (a POSITIVE change is a user fetch, a NEGATIVE one
-        // this instance did not write is a sibling marker answered with an echo
-        // run, and the FIRST commit never triggers anything).
-        if (current.refreshExecutablesNonce !== lastExecNonce) {
-            const firstCommit = lastExecNonce === void 0;
-            lastExecNonce = current.refreshExecutablesNonce;
-            if (!firstCommit && current.refreshExecutablesNonce !== controller.pushedExecNonce) {
-                if (typeof current.refreshExecutablesNonce === "number" && current.refreshExecutablesNonce < 0) {
-                    void controller.runExecutablesDiscovery({ echo: current.refreshExecutablesNonce });
-                } else void controller.runExecutablesDiscovery();
-            }
-        }
-    };
-}
-
-/**
- * Install the namespace on the `settings` service.
- *
- * Called from the plugin's `ctx.inject(["settings"], …)`, i.e. only when the
- * host actually provides the service — the plugin is inert without it (the
- * bridge still runs on env/row-config resolution).
+ * Attach the row's configuration form to one controller: the entry id, the auto
+ * page, the routing and the two fetch triggers all arrive through the shared
+ * adapter; what is left is what a commit *means* here.
  *
  * @param ctx - plugin context.
- * @param config - validated row config.
- * @param controller - the live gateway controller.
+ * @param controller - the live state the form drives.
  */
-export function installSettingsSection(ctx: PluginContext, config: DockerMcpConfig, controller: GatewayController): void {
-    const commit = createSettingsRouter(config, controller);
-    ctx.inject(["settings"], (settingsCtx: PluginContext) => {
-        const settings = (settingsCtx as unknown as { settings: SettingsService }).settings;
-        settings.installSection(ctx, SETTINGS_NAMESPACE, SettingsSchema, controller.entry, {
-            setSource: (source) => controller.setSource(source),
-            validate: validateSettings,
-            onChange: () => {
-                try {
-                    commit(controller.source());
-                } catch (error) {
-                    ctx.logger.error(`docker-desktop-mcp(${config.serverName}): ${String(error)}`);
-                }
-            }
-        });
-        controller.attachSettings(settings);
-        // Legacy migration: earlier versions persisted the discovery state into
-        // the user layer, and the base-layer fields must never be persisted —
-        // unset them so `settings.yaml` carries only user-authored fields (the
-        // raw-section change also re-serves the fresh base layer to open
-        // clients).
-        void Promise.resolve()
-            .then(() => {
-                const section = settings.document?.[SETTINGS_NAMESPACE];
-                const ops: SettingsOp[] = [];
-                if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-                    for (const key of PERSISTED_BASE_KEYS) {
-                        if (key in section) ops.push({ op: "unset", path: [key] });
-                    }
-                }
-                if (ops.length === 0) return;
-                return settings.mutate(SETTINGS_NAMESPACE, ops);
-            })
-            .catch((error) => {
-                ctx.logger.warn(`docker-desktop-mcp(${config.serverName}): legacy settings cleanup failed: ${String(error)}`);
-            });
+export function installDockerMcpForm(ctx: PluginContext, controller: Controller): SettingsFormHandle {
+    // The effect that keeps the attach disposed is `attachSettingsForm`'s own —
+    // this half only states what the form means.
+    const handle: SettingsFormHandle = attachSettingsForm(ctx as never, {
+        name: `docker-desktop-mcp(${controller.config.serverName})`,
+        userFields: [...USER_FIELDS],
+        liveKeys: [...LIVE_MIRROR_KEYS],
+        // A trigger fires only on a later diff of its own value, so reading a
+        // stored nonce back at boot never launches a run.
+        readValue: (field: string) => readConfigField(fieldValue(controller.config, field), defaultFor(field)),
+        actions: {
+            refreshNonce: () => controller.runDiscovery(),
+            refreshExecutablesNonce: () => controller.runExecutablesDiscovery()
+        },
+        // A user-authored commit changes what the machine answers with (the saved
+        // rows are what the kind's `select` choices read), so every routed commit
+        // re-publishes the answers it moved.
+        onCommit: () => controller.onFormCommit()
     });
+    controller.attachForm(handle);
+    return handle;
+}
+
+/** One field of the validated config, addressed by name (the volatile ones are
+ * references; ordinary ones are plain values). */
+function fieldValue(config: DockerMcpConfig, field: string): unknown {
+    return (config as unknown as Record<string, unknown>)[field];
+}
+
+/** The fallback a field answers before anything is read — enough for a trigger
+ * diff, nothing more. */
+function defaultFor(field: string): unknown {
+    switch (field) {
+        case "refreshNonce":
+        case "refreshExecutablesNonce":
+            return 0;
+        case "profileEntries":
+        case "executables":
+            return [];
+        case "migrationDismissed":
+            return false;
+        default:
+            return void 0;
+    }
 }

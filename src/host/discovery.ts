@@ -7,7 +7,9 @@
  * tolerant so a CLI-version drift degrades to "no profiles" instead of
  * crashing the host.
  */
-import { spawn } from "node:child_process";
+// `cross-spawn`, not `node:child_process`: on Windows it runs a `.cmd`/`.bat`
+// launcher (and resolves PATHEXT) the way the MCP SDK's own transport does.
+import spawn from "cross-spawn";
 import { scrubbedParentEnv } from "@deepseek-ai/dsh-subprocess";
 import { DISCOVERY_TIMEOUT_MS } from "./constants.js";
 
@@ -26,8 +28,8 @@ export function listProfiles(command: string): Promise<string[]> {
         });
         let stdout = "";
         let stderr = "";
-        child.stdout.on("data", (chunk) => (stdout += chunk));
-        child.stderr.on("data", (chunk) => (stderr += chunk));
+        child.stdout!.on("data", (chunk) => (stdout += chunk));
+        child.stderr!.on("data", (chunk) => (stderr += chunk));
         child.on("error", (error) => {
             reject(new Error(`could not run "${command} mcp profile list": ${error.message}`));
         });

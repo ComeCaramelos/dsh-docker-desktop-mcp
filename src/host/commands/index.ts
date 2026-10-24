@@ -12,7 +12,7 @@
  * otherwise the still-live definitions collide on re-register.
  */
 import type { CommandDefinition, DockerMcpConfig, PluginContext } from "../types/index.js";
-import type { GatewayController } from "../controller/index.js";
+import type { Controller } from "../controller/index.js";
 import { createProfileCommand } from "./profile.js";
 import { createRefreshCommand } from "./refresh.js";
 
@@ -23,7 +23,7 @@ import { createRefreshCommand } from "./refresh.js";
  * @param config - validated row config (for the log prefix).
  * @param controller - the live gateway controller.
  */
-export function registerCommands(ctx: PluginContext, config: DockerMcpConfig, controller: GatewayController): void {
+export function registerCommands(ctx: PluginContext, config: DockerMcpConfig, controller: Controller): void {
     // The registrations land on the COMMAND provider's own context effect, not
     // this plugin's — so without plugin-scoped cleanup a hot re-apply would
     // collide with the still-live definitions (the registry throws on a

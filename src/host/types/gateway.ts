@@ -6,7 +6,7 @@
  * spawn target, so a wrapper decision is always local to one spawn (the live
  * rule in AGENTS.md "Gateway console noise").
  */
-import type { GatewayStderrMode } from "./config.js";
+import type { GatewayStderrMode, ReconnectConfig } from "./config.js";
 
 /** Options for {@link gatewayStderrLogPath}. */
 export type GatewayStderrLogPathOptions = { tmpdir?: string; pid?: number };
@@ -20,15 +20,36 @@ export type GatewaySpawnTarget = {
     serverName?: string;
 };
 
-/** Options for {@link buildGatewaySpawn}. */
+/** Options for {@link buildGatewaySpawn} — passed through to `buildSpawn`. */
 export type GatewaySpawnOptions = GatewayStderrLogPathOptions & {
-    platform?: NodeJS.Platform;
-    exists?: (candidate: string) => boolean;
-    serverName?: string;
+    /** The Node executable the wrapper runs under (defaults to this process's). */
+    execPath?: string;
 };
 
-/** One gateway spawn target: raw command/args plus wrapper diagnostics. */
-export type GatewaySpawnResult = { command: string; args: string[]; redirect: string; fallback: string };
+/** One gateway spawn target: raw command/args plus where the stderr went. */
+export type GatewaySpawnResult = { command: string; args: string[]; redirect: string };
 
-/** The wrapper-diagnostics subset {@link noteGatewayStderr} reads. */
-export type GatewayStderrNotice = { redirect: string; fallback: string };
+/**
+ * Everything one gateway connection runs with — what a `docker-profile` kind
+ * answers when the manager asks what a live entry should spawn.
+ */
+export type GatewayConnection = {
+    /** The executable to spawn. */
+    command: string;
+    /** The profile the gateway runs with — the only place that argument goes. */
+    profile: string;
+    /** Arguments appended after `--profile`. */
+    extraArgs?: readonly string[];
+    /** Where the gateway's stderr goes. */
+    stderr?: GatewayStderrMode;
+    /** The bridge server namespace (an entry id is the natural one). */
+    serverName: string;
+    /** Explicit log path ("" = auto, per `gatewayStderrLogPath`). */
+    logPath?: string;
+    /** Stdio-bridge passthroughs, all optional. */
+    env?: Record<string, string>;
+    cwd?: string;
+    toolCallTimeoutMs?: number;
+    failOnStartupError?: boolean;
+    reconnect?: ReconnectConfig;
+};

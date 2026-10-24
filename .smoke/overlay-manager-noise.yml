@@ -1,0 +1,30 @@
+# Live stderr-mode check, mounted on a manager.
+#
+# The gateway spawn belongs to a `docker-profile` **connection** now, so a row
+# config alone can never make the noise line appear: what has to stand is the
+# pool's one entry. The shim answers `version` and `profile list` and prints
+# `NOISE-GW-LINE` to stderr on every gateway run, so the line's location is the
+# answer — in `<tmp>/dsh-ancesters-bridge-*/` when the mode is `log` (the
+# default), on the dsh console when the entry says `console`.
+#
+# To see the console mode without touching a GUI, replace the entry's extra
+# with `stderrMode: console`. The relative paths resolve against the dsh launch
+# cwd, so boot from the repo root.
+- insert:
+    - id: mcp-manager
+      name: '../../dsh-mcp-manager/lib/index.js'
+      config:
+        servers:
+            - id: docker
+              kind: docker-profile
+              enabled: true
+              extra:
+                  profile: default
+                  stderrMode: log
+    - id: mcp-docker
+      name: '../lib/index.js'
+      config:
+        command: .smoke/noise-docker
+        profileEntries:
+            - id: default
+              name: Default profile

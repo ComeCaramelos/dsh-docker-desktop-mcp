@@ -1,101 +1,107 @@
 /**
- * The live gateway controller — one per apply, assembled from five sections.
+ * The live controller — one per apply, assembled from five sections.
  *
- * Everything mutable about a running gateway lives in {@link createControllerState
- * ./state.ts}; the other sections are behavior over that state:
+ * Everything mutable lives in ./state.ts; the others are behavior over it:
  *
- *   ./state.ts       what the first spawn runs with + the composition base layer
- *   ./startup.ts     the bounded cold-start wait + the first runs
- *   ./discovery.ts   the two chained, gated discovery runs + the bounded retry
- *   ./push.ts        the host-owned nonce bump that re-serves the base layer
- *   ./bridge.ts      the nested mcp-client row and every way to switch it
+ *   ./state.ts      the mirror, the layers source, the runs
+ *   ./start.ts      what the machine answers first (the two opening runs)
+ *   ./discovery.ts  the two chained, gated runs + the bounded retry
+ *   ./publish.ts    the coalesced live commit every answer rides
+ *   ./commits.ts    what a configuration-form commit means for the row
+ *   ./persist.ts    the Host's own writes into the row's patch layer
  *
- * Rules it owns (see ../../../../AGENTS.md "Hard constraints"):
+ * No section spawns a gateway any more: the live connection belongs to the
+ * manager (kind `docker-profile`), which asks what the executable, the profile
+ * and the console-output mode are, and starts the pool fiber itself. What this
+ * controller owns is the **machine** half — what to probe, what to remember,
+ * and what to answer with.
  *
- * - The base layer is served to clients only through a write, so a run ends
- *   with a host-owned NEGATIVE `refreshNonce` bump — the only raw user-section
- *   change that recomputes the served value and travels on the wire. A negative
- *   marker this instance did not write is a SIBLING instance's sync marker and
- *   is answered with a silent echo run.
- * - Switching profile / executable / stderr mode is always `fiber.update()` on
- *   the nested bridge, never a recreated row; a fiber that does not exist yet
- *   (readiness still in flight) just records the value for the first start.
+ * The rules that must survive the split (see ../../../../AGENTS.md "Hard
+ * constraints"):
  *
- * The controller owns no UI knowledge; the settings section and the slash
- * commands call into it.
+ * - The live mirror is the only Host→client channel. Every run publishes it, and
+ *   every persisted write clears those fields back to their row answers.
+ * - A run never merges anything into the saved rows, and never writes the row
+ *   out of a retry.
+ * - A readiness wait is armed once per executable, never per tick.
  */
-import { applyStderrMode, noteStderr, switchConnection } from "./bridge.js";
-import { runExecutableDiscovery, runProfileDiscovery } from "./discovery.js";
-import { startGateway } from "./startup.js";
+import { normalizeEntries } from "../catalog.js";
+import { readConfigField } from "../values.js";
+import { dismissMigration, persistProfileEntries } from "./persist.js";
+import { publishLive } from "./publish.js";
+import { prepareFor, runExecutableDiscovery, runProfileDiscovery } from "./discovery.js";
+import { onFormCommit } from "./commits.js";
+import { startRuns } from "./start.js";
 import { createControllerState } from "./state.js";
-import type { GatewayController } from "./types.js";
-import type { DiscoveryOptions, DockerMcpConfig, PluginContext, SettingsResolved, SettingsService } from "../types/index.js";
+import type { Controller } from "./types.js";
+import type { CatalogEntry, DockerMcpConfig, PluginContext } from "../types/index.js";
+import type { SettingsFormHandle } from "@comecaramelos/dsh-ancesters/host";
 
-export type { GatewayController } from "./types.js";
+export type { Controller } from "./types.js";
+export type { ControllerState } from "./state.js";
 
 /**
  * Build the live controller for one apply of `config`.
- *
  * @param ctx - plugin context.
- * @param config - validated row config.
+ * @param config - validated config (every volatile field a reference).
  */
-export function createGatewayController(ctx: PluginContext, config: DockerMcpConfig): GatewayController {
+export function createController(ctx: PluginContext, config: DockerMcpConfig): Controller {
     const state = createControllerState(ctx, config);
 
-    return {
-        get entry() {
-            return state.entry;
-        },
-        source: () => state.source(),
-        setSource(next: () => SettingsResolved) {
-            state.source = next;
-        },
-        get settings() {
-            return state.installed;
-        },
-        get runningProfile() {
-            return state.runningProfile;
-        },
-        get runningCommand() {
-            return state.runningCommand;
-        },
-        get runningStderrMode() {
-            return state.runningStderrMode;
-        },
-        get started() {
-            return state.bridge !== void 0;
-        },
-        get pushedNonce() {
-            return state.pushedNonce;
-        },
-        get pushedExecNonce() {
-            return state.pushedExecNonce;
+    const controller: Controller = {
+        ctx,
+        config,
+        state,
+        get form() {
+            return state.form;
         },
 
+        attachForm(form: SettingsFormHandle) {
+            state.form = form;
+        },
+        detachForm() {
+            state.form = void 0;
+        },
+        onFormCommit() {
+            onFormCommit(controller);
+        },
         start() {
-            startGateway(ctx, state);
+            startRuns(ctx, state);
         },
-        runDiscovery(options?: DiscoveryOptions) {
-            return runProfileDiscovery(ctx, state, options);
+        runDiscovery(command?: string) {
+            return runProfileDiscovery(ctx, state, command);
         },
-        runExecutablesDiscovery(options?: DiscoveryOptions) {
-            return runExecutableDiscovery(ctx, state, options);
+        runExecutablesDiscovery() {
+            return runExecutableDiscovery(ctx, state);
         },
-        switchConnection(profile: string, command: string) {
-            switchConnection(ctx, state, profile, command);
+        prepare(command: string) {
+            return prepareFor(ctx, state, command);
         },
-        switchProfile(profile: string) {
-            switchConnection(ctx, state, profile, state.runningCommand);
+        noteRunning(command: string, consoleOutput: boolean) {
+            const changed = state.currentCommand !== command || state.live.stderrEffective !== (consoleOutput ? "console" : "log");
+            state.currentCommand = command;
+            state.live.effectiveCommand = command;
+            state.live.effectiveSource = command === "" ? "" : "row-config";
+            state.live.stderrEffective = consoleOutput ? "console" : "log";
+            // A different executable reads a different profile store, so the
+            // choices the picker offers have to be re-learned.
+            if (changed) void runProfileDiscovery(ctx, state, command);
+            else publishLive(ctx, state);
         },
-        applyStderrMode(mode) {
-            applyStderrMode(ctx, state, mode);
+        profileEntries() {
+            return normalizeEntries(readConfigField(config.profileEntries, []), "profiles");
         },
-        noteStderr(built) {
-            noteStderr(ctx, state, built);
+        executables() {
+            return normalizeEntries(readConfigField(config.executables, []), "executables");
         },
-        attachSettings(settings: SettingsService) {
-            state.installed = settings;
-            state.resolveSettingsGate(settings);
+        persistProfileEntries(entries: readonly CatalogEntry[]) {
+            return persistProfileEntries(controller, entries);
+        },
+        dismissMigration() {
+            return dismissMigration(controller);
+        },
+        publish() {
+            publishLive(ctx, state);
         },
         dispose() {
             state.disposed = true;
@@ -104,5 +110,9 @@ export function createGatewayController(ctx: PluginContext, config: DockerMcpCon
                 state.retryTimer = void 0;
             }
         }
-    } satisfies GatewayController;
+    };
+    return controller;
 }
+
+/** Older name kept for the first consumers of this face. */
+export const createGatewayController = createController;

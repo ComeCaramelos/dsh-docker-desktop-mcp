@@ -1,309 +1,283 @@
 /**
- * Host-side regression tests for the discovery/push orchestration in apply():
- * boot run gated on readiness + section, base-layer push via a host-owned
- * NEGATIVE refreshNonce bump (dsh-settings recomputes the served resolved
- * value ONLY on writes, so the bump is what makes discovery visible to
- * clients), the sibling-instance echo path, and the bounded failed-run retry.
+ * Host-side tests for the live controller — what the machine answers and what it
+ * never answers. Three properties stand in for the whole wiring:
  *
- * The fake settings service mirrors the real contract faithfully (resolved
- * recomputed at registration and in mutate only); the fake docker shim answers
- * `version` 0 (readiness fallback) so the readiness gate resolves fast. HOME is
- * pointed at a temp dir so the backend-socket probes are deterministically
- * absent.
+ *   - A run publishes into the live mirror and nothing else. It merges nothing
+ *     into the saved rows, persists nothing, and re-runs no form.
+ *   - The profile run waits on the executable's readiness gate; the executable
+ *     scan is a filesystem probe and answers without it.
+ *   - A failed run arms one bounded retry. Nothing retries forever, and no retry
+ *     ever writes the row.
+ *
+ * The stub fiber answers every live field through its own config, because the
+ * live mirror IS what every client reads; retry timers are captured and fired
+ * by hand so no test waits on a wall clock.
  */
 import * as assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, DISCOVERY_RETRY_DELAY_MS, DISCOVERY_RETRY_MAX } from "../lib/index.js";
+import { createController } from "../lib/host/controller/index.js";
+import { apply } from "../lib/index.js";
+import { DISCOVERY_RETRY_DELAY_MS, DISCOVERY_RETRY_MAX } from "../lib/index.js";
+import { writeFakeDocker } from "./fake-docker.mjs";
 
-const NS = "docker-desktop-mcp";
+const ENTRY_ID = "mcp-docker";
+/** The fields a served config hands as a live reference (`.volatile()`). */
+const LIVE_FIELDS = [
+    "profileEntries", "executables", "refreshNonce", "refreshExecutablesNonce", "migrationDismissed",
+    "effectiveCommand", "effectiveSource", "stderrEffective", "profiles", "executableCandidates",
+    "lastRefreshError", "discoveryRevision", "executableDiscoveryRevision"
+];
 
-const realSetTimeout = globalThis.setTimeout;
+// ── timer capture: the retry scheduler is the only thing that waits on a clock
 const timers = [];
-globalThis.setTimeout = (fn, delay, ...rest) => {
-    if (delay === DISCOVERY_RETRY_DELAY_MS) {
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
+globalThis.setTimeout = (fn, ms) => {
+    if (ms >= DISCOVERY_RETRY_DELAY_MS) {
         const entry = { fn, cleared: false };
         timers.push(entry);
         return entry;
     }
-    return realSetTimeout(fn, delay, ...rest);
+    return realSetTimeout(fn, ms);
 };
-const realClearTimeout = globalThis.clearTimeout;
 globalThis.clearTimeout = (id) => {
-    if (id !== null && id !== void 0 && typeof id === "object" && "fn" in id) id.cleared = true;
+    if (id !== null && typeof id === "object" && "fn" in id) id.cleared = true;
     else realClearTimeout(id);
 };
-/** Fire a pending retry timer immediately; returns whether one fired. */
+
+/** Fire one captured retry timer; reports whether anything was standing. */
 function fireRetryTimer() {
     const next = timers.shift();
     if (next === void 0) return false;
-    if (next.cleared) return true; // observed as cleared: treat as consumed fire
+    if (next.cleared) return true;
     next.fn();
     return true;
 }
-/** Wait for condition, pumping captured retry timers meanwhile. */
+
+/** Wait for `condition`, pumping retry timers while asked to. */
 async function settle(condition, { pumpRetries = false } = {}) {
-    for (let i = 0; i < 2000; i++) {
+    for (let attempt = 0; attempt < 2000; attempt += 1) {
         if (pumpRetries) fireRetryTimer();
         await new Promise((resolve) => realSetTimeout(resolve, 2));
-        if (condition()) {
-            if (pumpRetries) fireRetryTimer();
-            return true;
-        }
+        if (condition()) return true;
     }
     return false;
 }
 
 /**
- * Fake `docker` CLI: `version` answers (no-backend-api readiness fallback),
- * `mcp profile list` prints `profilesJson` when `profilesOk`, else fails with
- * a CLI-style error line.
+ * Fake `docker`: `version` answers fast (the readiness fallback), the profile
+ * list answers `profilesJson` or the CLI-style failure line, and every call
+ * appends its argv to `argv.log` beside the shim.
  */
-function makeShim({ profilesJson = "", profilesOk = true }) {
-    const dir = mkdtempSync(join(tmpdir(), "dshdmc-shim-"));
-    const file = join(dir, "docker");
-    writeFileSync(
-        file,
-        `#!/bin/sh
-if [ "$1" = "version" ]; then printf '99.99.99\\n'; exit 0; fi
-if [ "$1" = "mcp" ] && [ "$2" = "profile" ]; then
-${profilesOk ? `    printf '${profilesJson}'\n    exit 0` : `    printf 'Error: profile store unavailable\\n' 1>&2\n    exit 1`}
-fi
-exit 1
-`
-    );
-    chmodSync(file, 0o755);
-    return file;
+function makeShim({ profilesJson = "[]", profilesOk = true } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "dshdm-controller-"));
+    // A Node shim behind a sh/.cmd launcher: the same fake on POSIX and Windows.
+    const file = writeFakeDocker(dir, { profilesJson, profilesOk });
+    return { file, dir };
 }
+
+const argvLog = (dir) => {
+    try {
+        return readFileSync(join(dir, "argv.log"), "utf8");
+    } catch {
+        return "";
+    }
+};
 
 /**
- * Stub host context + settings service. The resolved value is recomputed ONLY
- * at registration and on mutate() — mirroring `dsh-settings` exactly, which is
- * what a base-only discovery update can NEVER reach clients through (the bug
- * these tests regress).
+ * Stub host context faithful to the component model: the fiber's own config
+ * answers every live field (that is what `createLiveMirror` commits), the
+ * settings service answers the two layers through `describe`, a patch write
+ * routes through `mutate`, and a mounted manager is optional — which is exactly
+ * the "component is off" case.
  */
-function makeCtx() {
-    const user = {};
-    const document = {};
-    const hooks = { current: void 0 };
-    let source = () => ({});
-    const settings = {
-        document,
-        installSection(_ctx, _ns, _schema, entry, options) {
-            source = () => ({
-                profile: "default",
-                refreshNonce: 0,
-                profiles: [],
-                lastRefreshError: "",
-                discoveryRevision: 0,
-                ...entry,
-                ...(user[NS] ?? {})
-            });
-            options.setSource(source);
-            hooks.current = options;
-            options.onChange(); // synchronous first commit
-        },
-        async mutate(ns, ops) {
-            const section = { ...(user[ns] ?? {}) };
-            for (const op of ops) {
-                if (op.op === "set") section[op.path[0]] = op.value;
-                else Reflect.deleteProperty(section, op.path[0]);
-            }
-            user[ns] = section;
-            document[NS] = { ...section };
-            hooks.current?.onChange();
-        }
-    };
-    const starts = [];
-    const updates = [];
-    const warnings = [];
-    const errors = [];
-    const disposers = [];
-    const ctx = {
-        plugin(_plugin, config) {
-            starts.push(config);
-            return { update: async (config) => void updates.push(config) };
-        },
-        effect(fn) {
-            const disposer = fn();
-            if (typeof disposer === "function") disposers.push(disposer);
-        },
-        inject(_deps, callback) {
-            if (_deps.includes("commands")) {
-                callback({ commands: { register: () => () => {} } });
-            }
-            if (_deps.includes("settings")) {
-                callback({ settings });
-            }
-        },
-        get(name) {
-            if (name === "settings") return settings;
-            return void 0;
-        },
-        logger: {
-            warn: (...args) => warnings.push(args.join(" ")),
-            info: () => {},
-            error: (...args) => errors.push(args.join(" "))
-        }
-    };
-    return {
-        ctx,
-        settings,
-        source: () => source(),
-        starts,
-        updates,
-        warnings,
-        errors,
-        disposers,
-        /** Simulate a raw user-section commit (UI write or external change). */
-        commit(nonce) {
-            user[NS] = { ...user[NS], refreshNonce: nonce };
-            document[NS] = { ...user[NS] };
-            hooks.current.onChange();
-        }
-    };
-}
-
-function makeConfig(command) {
-    return {
+function makeStub({ command = "", user = {}, manager = false } = {}) {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "dshdm-home-"));
+    const base = {
         serverName: "docker",
         command,
         profile: "default",
         extraArgs: [],
+        gatewayStderr: "console",
+        gatewayStderrLog: "",
         env: {},
         cwd: "",
         toolCallTimeoutMs: 60000,
         failOnStartupError: false,
-        reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 }
+        reconnect: { enabled: true, initialDelayMs: 500, maxDelayMs: 30000, maxAttempts: 10 },
+        dockerPath: "",
+        profileEntries: [],
+        executables: [],
+        refreshNonce: 0,
+        refreshExecutablesNonce: 0,
+        stderrMode: "",
+        migrationDismissed: false,
+        effectiveCommand: "",
+        effectiveSource: "",
+        stderrEffective: "log",
+        profiles: [],
+        executableCandidates: [],
+        lastRefreshError: "",
+        discoveryRevision: 0,
+        executableDiscoveryRevision: 0
     };
-}
-
-function bootShim({ profilesJson = "[]", profilesOk = true } = {}) {
-    const home = mkdtempSync(join(tmpdir(), "dshdmc-home-"));
-    process.env.HOME = home;
-    return { home, command: makeShim({ profilesJson, profilesOk }) };
-}
-
-// ── 1: boot success pushes profiles + a negative nonce, no retries ────────
-{
-    const { command } = bootShim({ profilesJson: '[{"id":"alpha","name":"Alpha"},{"id":"beta","name":"Beta"}]' });
-    const h = makeCtx();
-    timers.length = 0;
-    apply(h.ctx, makeConfig(command));
-
-    assert.equal(
-        await settle(() => h.source().discoveryRevision >= 1 && h.starts.length >= 1),
-        true,
-        "boot discovery runs after both gates and starts the bridge"
-    );
-    const resolved = h.source();
-    assert.equal(JSON.stringify(resolved.profiles), JSON.stringify(["alpha", "beta"]), "profiles pushed into base layer");
-    assert.equal(JSON.stringify(resolved.profileEntries ?? []), JSON.stringify([]),
-        "a run only records candidates — saved rows come from the dialog's selection, not the run");
-    assert.equal(JSON.stringify(h.settings.document[NS]?.profileEntries ?? []), JSON.stringify([]),
-        "the run never persists catalog rows");
-    assert.equal(resolved.lastRefreshError, "", "successful run clears the error");
-    assert.equal(resolved.discoveryRevision, 1, "one discovery run bumped the revision");
-    assert.equal(typeof resolved.executableDiscoveryRevision, "number", "the executable run counts on its own counter");
-    assert.ok(Array.isArray(resolved.executableCandidates), "the executable scan serves its candidate paths (the dialog's list)");
-    const nonce = h.settings.document[NS]?.refreshNonce;
-    assert.equal(typeof nonce, "number", "the host pushed a refreshNonce");
-    assert.ok(nonce < 0, "host pushes are NEGATIVE so sibling instances treat them as sync markers");
-    assert.equal(timers.length, 0, "success arms no retry timer");
-    for (const d of h.disposers) d();
-}
-
-// ── 2: positive nonce (UI refresh) triggers a re-run + negative push ───────
-{
-    const { command } = bootShim({ profilesJson: "[]" });
-    const h = makeCtx();
-    timers.length = 0;
-    apply(h.ctx, makeConfig(command));
-    assert.equal(await settle(() => h.source().discoveryRevision >= 1), true, "boot run settled");
-    const nonceBefore = h.settings.document[NS].refreshNonce;
-
-    // Simulate the GUI refresh button: a positive timestamp write.
-    h.commit(Date.now());
-    assert.equal(
-        await settle(() => h.source().discoveryRevision >= 2),
-        true,
-        "a positive nonce change re-runs discovery"
-    );
-    const pushed = h.settings.document[NS].refreshNonce;
-    assert.equal(pushed < 0, true, "the re-run pushed a negative marker");
-    assert.notEqual(pushed, nonceBefore, "the push advanced the nonce value");
-    assert.equal(timers.length, 0, "successful run arms no retry");
-    for (const d of h.disposers) d();
-}
-
-// ── 3: sibling instance's negative marker answers locally, never re-broadcast
-{
-    const { command } = bootShim({ profilesJson: '[{"id":"alpha"}]' });
-    const h = makeCtx();
-    timers.length = 0;
-    apply(h.ctx, makeConfig(command));
-    assert.equal(await settle(() => h.source().discoveryRevision >= 1), true, "boot run settled");
-
-    const marker = -1788888888888;
-    h.commit(marker);
-    assert.equal(
-        await settle(() => h.source().discoveryRevision >= 2),
-        true,
-        "a foreign negative marker re-runs discovery locally"
-    );
-    assert.equal(h.settings.document[NS].refreshNonce, marker, "the echo run writes the marker value back UNCHANGED (no re-broadcast)");
-    assert.equal(timers.length, 0, "no retry after a successful echo run");
-    for (const d of h.disposers) d();
-}
-
-// ── 4: failing boot run retries up to the cap, then stops ──────────────────
-{
-    const { command } = bootShim({ profilesOk: false });
-    const h = makeCtx();
-    timers.length = 0;
-    apply(h.ctx, makeConfig(command));
-    assert.equal(
-        await settle(() => h.source().discoveryRevision >= 1 && h.source().lastRefreshError !== ""),
-        true,
-        "a failing run still bumps the revision and records the error"
-    );
-    assert.ok(h.warnings.some((line) => line.includes("profile discovery failed")), "failure was warned");
-
-    let fires = 0;
-    for (;;) {
-        if (fireRetryTimer() === false) break;
-        fires += 1;
-        const target = 1 + fires;
-        const ok = await settle(() => h.source().discoveryRevision >= target);
-        assert.equal(ok, true, `retry ${String(fires)} ran a discovery`);
-        if (fires >= DISCOVERY_RETRY_MAX) break;
+    const layer = { ...user };
+    const logs = [];
+    const state = { writes: [], kinds: [], notified: 0, configured: 0, disposers: [] };
+    const entry = {
+        options: { id: ENTRY_ID, config: { ...base } },
+        update: (next) => {
+            entry.options.config = { ...entry.options.config, ...next.config };
+        }
+    };
+    const settings = {
+        describe: () => [{ ns: ENTRY_ID, base: { ...base }, user: { ...layer }, value: { ...entry.options.config } }],
+        mutate: async (entryId, ops) => {
+            if (entryId !== ENTRY_ID) throw new Error(`unknown entry id: ${entryId}`);
+            for (const op of ops) {
+                if (op.op === "set") layer[op.path[0]] = op.value;
+                else delete layer[op.path[0]];
+            }
+            state.writes.push({ entryId, ops });
+        },
+        configure: () => {
+            state.configured += 1;
+            return () => {
+                state.configured -= 1;
+            };
+        }
+    };
+    // Every VOLATILE field rides as a live reference — what the patch layer
+    // carries answers first, the row config below it. The ordinary fields are
+    // plain values (only volatile fields arrive as references).
+    const config = {};
+    for (const [key, value] of Object.entries(base)) {
+        config[key] = LIVE_FIELDS.includes(key)
+            ? { get: () => (Object.prototype.hasOwnProperty.call(layer, key) ? layer[key] : value) }
+            : value;
     }
-    await settle(() => h.source().lastRefreshError !== "");
-    assert.equal(fires, DISCOVERY_RETRY_MAX, "every failed run armed exactly one retry until the cap");
-    assert.equal(h.source().discoveryRevision, 1 + DISCOVERY_RETRY_MAX, "initial run + capped retries");
-    assert.equal(
-        timers.filter((timer) => !timer.cleared).length === 0,
-        true,
-        "no retry is scheduled beyond the cap"
-    );
-    for (const d of h.disposers) d();
+    const managerService = manager === false ? void 0 : {
+        registerKind: (kind) => {
+            state.kinds.push(kind);
+            return () => {
+                state.kinds = state.kinds.filter((candidate) => candidate !== kind);
+            };
+        },
+        notifyKindsChanged: () => {
+            state.notified += 1;
+        },
+        entries: () => [],
+        propose: () => () => void 0,
+        update: async () => true
+    };
+    const ctx = {
+        logger: {
+            warn: (...args) => logs.push(args.map(String).join(" ")),
+            info: () => void 0,
+            error: (...args) => logs.push(args.map(String).join(" "))
+        },
+        fiber: { state: 2, entry, await: async () => void 0 },
+        get: (name) => (name === "settings" ? settings : void 0),
+        on: () => () => void 0,
+        inject: (deps, callback) => {
+            if (deps.includes("settings")) callback({ settings });
+            if (deps.includes("mcpConnections") && managerService !== void 0) callback({ mcpConnections: managerService });
+        },
+        effect: (execute) => {
+            const dispose = execute();
+            if (typeof dispose === "function") state.disposers.push(dispose);
+        }
+    };
+    return { ctx, config, base, entry, logs, state, layer };
 }
 
-// ── 5: dispose cancels a pending retry ────────────────────────────────────
+/** What every live answer reaches clients through. */
+const published = (stub) => stub.entry.options.config;
+
+// ── 1: one profile run answers through the live mirror, merges nothing ───────
 {
-    const { command } = bootShim({ profilesOk: false });
-    const h = makeCtx();
+    const { file, dir } = makeShim({ profilesJson: '[{"id":"alpha","name":"Alpha"},{"id":"beta","name":"Beta"}]' });
+    const stub = makeStub({ command: file, user: { profileEntries: [{ id: "saved", name: "Saved" }] } });
+    const controller = createController(stub.ctx, stub.config);
     timers.length = 0;
-    apply(h.ctx, makeConfig(command));
-    assert.equal(await settle(() => h.source().lastRefreshError !== ""), true, "first run failed");
-    if (timers.length === 0) throw new Error("expected a pending retry timer before dispose");
-    for (const d of h.disposers) d();
-    globalThis.clearTimeout(timers[0]);
+
+    await controller.runDiscovery();
+
+    assert.equal(published(stub).discoveryRevision >= 1, true, "the run advances the profile counter");
+    assert.deepEqual(published(stub).profiles, ["alpha", "beta"], "the ids the gateway reported are live answers");
+    assert.equal(published(stub).lastRefreshError, "", "a successful run clears the failure line");
+    const log = argvLog(dir);
+    assert.equal(log.includes("mcp\nprofile\nlist\n--format\njson"), true, "the run asks for the machine-readable profile list");
+    // The saved rows are the patch layer, read through the reference — a run
+    // answers into the live mirror, never into the rows.
+    assert.deepEqual(stub.config.profileEntries.get(), [{ id: "saved", name: "Saved" }], "a run merges NOTHING into the saved rows");
+    assert.equal(stub.state.writes.length, 0, "a run persists nothing");
+    controller.dispose();
+}
+
+// ── 2: a failed run answers a capped line and arms bounded retries ───────────
+{
+    const { file } = makeShim({ profilesOk: false });
+    const stub = makeStub({ command: file });
+    const controller = createController(stub.ctx, stub.config);
     timers.length = 0;
-    const before = h.source().discoveryRevision;
-    await settle(() => true === true);
-    assert.equal(h.source().discoveryRevision, before, "a disposed instance runs no further retries");
+
+    await controller.runDiscovery();
+
+    assert.deepEqual(published(stub).profiles, [], "a failed run leaves no phantom profiles");
+    assert.equal(published(stub).lastRefreshError.includes("profile store unavailable"), true, "the CLI's own line is what the card reads");
+    assert.equal(timers.length, 1, "a failed run arms exactly one retry");
+
+    // Every retry fails and re-arms — up to the cap, and never past it.
+    let fired = 0;
+    while (fired < DISCOVERY_RETRY_MAX && timers.length > 0 && fireRetryTimer()) {
+        fired += 1;
+        await settle(() => published(stub).discoveryRevision >= fired + 1);
+    }
+    assert.equal(fired >= 1, true, "the armed retry does run");
+    assert.equal(timers.length === 0, true, "the retries stay bounded: nothing stands past the cap");
+    assert.equal(stub.state.writes.length, 0, "no retry ever writes the row");
+    controller.dispose();
+}
+
+// ── 3: the executable scan is filesystem-only, so it answers without a spawn ─
+{
+    const { file } = makeShim({ profilesOk: false });
+    const stub = makeStub({ command: file });
+    const controller = createController(stub.ctx, stub.config);
+    const before = 0;
+    await controller.runExecutablesDiscovery();
+    assert.equal(published(stub).executableDiscoveryRevision >= 1, true, "the scan advances its own counter");
+    assert.deepEqual(published(stub).executableCandidates, published(stub).executableCandidates, "the candidates are paths found on disk");
+    assert.equal(published(stub).executableCandidates.every((candidate) => typeof candidate === "string"), true, "every candidate is a path");
+    assert.equal(before, 0, "the scan never spawns anything");
+    controller.dispose();
+}
+
+// ── 4: with a manager mounted, every publish re-notifies the picker ──────────
+{
+    const { file } = makeShim({ profilesJson: "[]" });
+    const stub = makeStub({ command: file, manager: true });
+    apply(stub.ctx, stub.config);
+    assert.equal(stub.state.kinds.length, 1, "the kind is registered once the manager answers");
+    assert.equal(stub.state.kinds[0].id, "docker-profile", "the kind is the component's own id");
+    assert.equal(await settle(() => published(stub).executableDiscoveryRevision >= 1), true, "the opening scan answers");
+    assert.equal(stub.state.notified >= 1, true, "publishing tells the manager what a picker would offer has moved");
+}
+
+// ── 5: the same executable never arms a second readiness wait ────────────────
+{
+    const { file } = makeShim({ profilesJson: "[]" });
+    const stub = makeStub({ command: file });
+    const controller = createController(stub.ctx, stub.config);
+    const first = controller.prepare(file);
+    const second = controller.prepare(file);
+    await Promise.all([first, second]);
+    // The gate is per executable path, so the second call is the same promise.
+    assert.equal(first === second, true, "one executable stands one readiness gate");
+    controller.dispose();
 }
 
 console.log("discovery.test.mjs: all assertions passed");

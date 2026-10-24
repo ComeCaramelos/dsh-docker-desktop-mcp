@@ -1,170 +1,113 @@
 /**
  * Controller state — the mutable half one apply owns.
  *
- * Everything a running gateway can change lives in one object, so every other
- * controller section is a pure function over it (no closure state to thread
- * through five modules). What the first spawn runs with is resolved here, once:
- * the WSL host-CLI rewrite, the profile precedence, the composition base layer
- * and the two gates every wait hangs on.
+ * Since the live connection belongs to the manager (kind `docker-profile`), what
+ * is mutable *here* is everything the machine answers: the two named catalogs,
+ * the discovery runs and their bounded retry, the executable the runs probe, and
+ * the live mirror every client reads. There is no nested bridge here, no
+ * cold-start spawn and no in-place switch — the pool the manager owns starts,
+ * switches and stops the gateway, and calls here for what it needs to know.
  */
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
+import type { LiveMirror, PersistUser, SettingsFormHandle } from "@comecaramelos/dsh-ancesters/host";
+import type { McpConnectionsService } from "@comecaramelos/dsh-mcp-manager/api";
 import { PROFILE_ENV_VAR, PROFILE_PATTERN } from "../constants.js";
-import { resolveDockerCommand } from "../docker.js";
-import {
-    readPersistedCommand,
-    readPersistedProfile,
-    readPersistedStderrMode,
-    resolveBaseProfile,
-    resolveEffectiveCommand,
-    resolveStderrMode
-} from "../values.js";
-import type {
-    DockerMcpConfig,
-    GatewayStderrMode,
-    McpBridge,
-    PluginContext,
-    SettingsBaseLayer,
-    SettingsResolved,
-    SettingsService
-} from "../types/index.js";
+import { createLiveMirror, liveMirrorKeys, readConfigForm, readConfigLayers, resolveEffectiveCommand } from "../values.js";
+import type { ConfigLayers, ConfigLiveFields, DockerMcpConfig, PluginContext } from "../types/index.js";
 
-/** Everything mutable about one running gateway, one per apply. */
+/** Everything mutable about one apply. */
 export type ControllerState = {
-    /** Row config with the WSL host-CLI rewrite applied (the bridge spawn target). */
-    readonly row: DockerMcpConfig;
-    /** The in-memory composition base layer handed to `installSection`. */
-    readonly entry: SettingsBaseLayer;
-    /** Live resolved settings value; swapped by the section's `setSource` hook. */
-    source: () => SettingsResolved;
-    /** Profile the bridge runs (or will start) with. */
-    runningProfile: string;
-    /** Executable the bridge runs (or will start) with. */
-    runningCommand: string;
-    /** Effective gateway-stderr mode of the running/spawning bridge. */
-    runningStderrMode: GatewayStderrMode;
-    /** Nested mcp-client row; created when starting the gateway is safe. */
-    bridge: McpBridge | undefined;
-    /** Last `refreshNonce` written by the HOST itself — the loop guard that
-     * keeps its own `onChange` from re-running discovery. */
-    pushedNonce: number | undefined;
-    /** Same guard for the executable-catalog refresh trigger. */
-    pushedExecNonce: number | undefined;
+    /** The validated config as `apply` handed it (every volatile field a
+     * reference — read through `readConfigField`, never a captured value). */
+    readonly config: DockerMcpConfig;
+    /** The live mirror: every Host-published volatile field's current answer.
+     * Mutated through ./publish.ts, which coalesces per microtask. */
+    readonly live: ConfigLiveFields;
+    /** The live layers read: the references answer what the row says now, and
+     * once the form is described the two layers answer the "user or row config?"
+     * distinction with it. Read live on every commit — cordis starts the
+     * `settings` injection callback after `apply` returns, so a value captured
+     * here could never be trusted. */
+    source: () => ConfigLayers;
+    /** The attached configuration form (entry id + settings service), or
+     * undefined until the entry id resolves and the service answers. */
+    form: SettingsFormHandle | undefined;
+    /** The coalescing live publisher, stood up on the first publish. */
+    mirror: LiveMirror | undefined;
+    /** The Host's own write channel, stood up on the first write. */
+    persister: PersistUser | undefined;
+    /** The executable the discovery runs probe: the one the last resolved
+     * connection used, else the row config's answer (WSL-rewritten default). */
+    currentCommand: string;
+    /** Every live-only key, for the `unset` half of every persisted write. */
+    readonly liveKeys: readonly string[];
+    /** Serializes discovery runs so rapid refreshes never interleave. */
+    discovery: Promise<void>;
     /** Pending failed-run retry timer; armed only while discovery keeps failing. */
     retryTimer: NodeJS.Timeout | undefined;
     /** Consecutive scheduled retries after failed runs; reset on success. */
     retriesPending: number;
-    /** Set once this half is disposed; readiness must not start anything. */
+    /** Set once this half is disposed; nothing may schedule anything after. */
     disposed: boolean;
-    /** Serializes discovery runs so rapid refreshes never interleave. */
-    discovery: Promise<void>;
-    /** Resolves with the settings service once its section is installed —
-     * every base-layer push needs a write, so every discovery run waits on it. */
-    settingsGate: Promise<SettingsService>;
-    resolveSettingsGate: (value: SettingsService) => void;
-    /** Settings service as installed by ../settings.ts (undefined until then). */
-    installed: SettingsService | undefined;
-    /** Last emitted gateway-stderr notice (redirect target or fallback reason);
-     * suppresses repeats across switch/reconnect churn. */
-    stderrNotice: string;
-    /** Gateway-readiness gate; also the trigger for the FIRST discovery run —
-     * the first connection starts as soon as spawning is safe (see
-     * ../readiness.ts) and discovery only answers with the real profile store
-     * once the daemon is reachable, so the initial run waits on this gate
-     * instead of running blind at section registration. Assigned by `start`. */
+    /** The readiness gate the profile run waits on (see ./discovery.ts). */
     gatewayGate: Promise<void>;
+    /** The executable the standing gate waits on, so a second run against the
+     * same path never arms a second wait. */
+    gateCommand: string;
+    /** The launch environment's `DSH_DOCKER_MCP_PROFILE` seed, resolved once at
+     * apply time (it never changes without a remount). */
+    readonly envProfile: unknown;
+    /** Called after every publish so the manager re-reads what the kind's
+     * `select` choices would answer. Installed by ./manager.ts; a no-op until. */
+    notifyKindsChanged: () => void;
+    /** The manager's `mcpConnections` service, once the injection answers.
+     * Undefined when no manager is mounted — which is exactly what "the component
+     * is off" means: the row answers everything it knows and runs nothing. */
+    connections: McpConnectionsService | undefined;
 };
 
 /**
- * Resolve what the first spawn runs with and build the mutable state around it.
+ * Resolve what the machine answers first and build the mutable state around it.
  *
  * @param ctx - plugin context.
- * @param config - validated row config.
+ * @param config - validated config (every volatile field a reference).
  */
 export function createControllerState(ctx: PluginContext, config: DockerMcpConfig): ControllerState {
-    // ── what the first spawn runs with ─────────────────────────────────────
-    // WSL + Docker Desktop: the default `docker` target is rewritten to the
-    // Windows-side CLI whose store actually holds the UI-created profiles
-    // (see ../docker.ts). The resolved value is the base-layer
-    // `effectiveCommand` when no UI override is set; a UI-set executable
-    // override wins verbatim. Both feed discovery, the bridge spawn and the
-    // readiness probes.
-    const rowCommand = resolveDockerCommand(config.command);
-    if (rowCommand !== config.command) {
-        ctx.logger.info(`docker-desktop-mcp(${config.serverName}): WSL host detected — using the Docker Desktop CLI at "${rowCommand}" (override in the card or with row-config "command")`);
-    }
-    const row: DockerMcpConfig = rowCommand === config.command ? config : { ...config, command: rowCommand };
+    // The launch environment's profile seed, resolved once through the layered
+    // environment helper — never `process.env` directly.
     const envProfile = launchEnvironmentOf(ctx).get(PROFILE_ENV_VAR)?.value;
-    const baseProfile = resolveBaseProfile(config.profile, envProfile);
-    if (envProfile !== void 0 && envProfile !== "" && baseProfile !== envProfile) {
-        ctx.logger.warn(`docker-desktop-mcp(${config.serverName}): ignoring ${PROFILE_ENV_VAR}="${envProfile}" — not a valid profile id (pattern ${PROFILE_PATTERN}); using "${baseProfile}"`);
+    if (envProfile !== void 0 && envProfile !== "" && !(typeof envProfile === "string" && PROFILE_PATTERN.test(envProfile))) {
+        ctx.logger.warn(`docker-desktop-mcp(${config.serverName}): ignoring ${PROFILE_ENV_VAR}="${String(envProfile)}" — not a valid profile id (pattern ${PROFILE_PATTERN})`);
     }
-    // The persisted UI selection wins over env/row config: seed the first
-    // gateway spawn with it. When the settings service is not up yet this
-    // yields the base profile, and the installSection initial onChange
-    // switches the bridge to the persisted selection in place right after.
-    const initialProfile = readPersistedProfile(ctx) ?? baseProfile;
 
-    // Composition base layer: held in memory, never persisted. The executable
-    // actually in use (`effectiveCommand`) and the discovery state live here.
-    // The discovery state is the CANDIDATE list (`profiles` /
-    // `executableCandidates`) the fetch dialogs offer — a run never merges
-    // anything into the persisted catalogs; rows are added only through an
-    // explicit user selection (the dialog's "Add selected") or an explicit
-    // merge by `/docker-refresh`.
-    // NOTE: `dsh-settings` only re-serves the resolved value on writes, so a
-    // base-entry mutation is invisible to clients until the host pushes it —
-    // see ./push.ts `pushBaseLayer`.
-    const entry: SettingsBaseLayer = {
-        profile: initialProfile,
-        effectiveCommand: "",
-        /** Row-config `gatewayStderr` in effect — static base-layer value, the
-         * "Reduce log output" fallback when no persisted UI toggle is set. */
-        rowStderr: config.gatewayStderr === "console" ? "console" : "log",
-        profiles: [],
-        executableCandidates: [],
-        lastRefreshError: "",
-        discoveryRevision: 0,
-        executableDiscoveryRevision: 0
-    };
-    /** Live resolved settings value; swapped by installSection hooks. */
-    const source: () => SettingsResolved = () => entry as SettingsResolved;
-    // Profile the nested bridge runs with — or, while the readiness wait is
-    // still in flight, the profile its first start will use.
-    const runningProfile = initialProfile;
-    // Executable the nested bridge runs with — or, while the readiness wait is
-    // still in flight, the executable its first start will use. A UI write of
-    // `command` switches it verbatim; an empty override falls back to the
-    // auto-resolved row config.
-    const runningCommand = resolveEffectiveCommand(readPersistedCommand(ctx), config.command);
-    entry.effectiveCommand = runningCommand;
-    // Effective gateway-stderr mode ("log"/"console"): the persisted UI toggle
-    // when set, else the row-config `gatewayStderr`. Every spawn reads it, and
-    // a UI write of `stderrMode` hot-switches it.
-    const runningStderrMode = resolveStderrMode(readPersistedStderrMode(ctx), config.gatewayStderr);
+    // What the first discovery run probes: the row config's executable, with the
+    // WSL host-CLI rewrite applied to the literal default.
+        const opening = resolveEffectiveCommand(config);
+    const live = createLiveMirror();
+    live.effectiveCommand = opening.path;
+    live.effectiveSource = opening.source;
 
-    let resolveSettingsGate!: (value: SettingsService) => void;
-    const settingsGate = new Promise<SettingsService>((resolve) => {
-        resolveSettingsGate = resolve;
-    });
-
-    return {
-        row,
-        entry,
-        source,
-        runningProfile,
-        runningCommand,
-        runningStderrMode,
-        bridge: void 0,
-        pushedNonce: void 0,
-        pushedExecNonce: void 0,
+    const state: ControllerState = {
+        config,
+        live,
+        form: void 0,
+        mirror: void 0,
+        persister: void 0,
+        source: () => {
+            const current = state.form?.current();
+            return readConfigLayers(config, current?.settings === void 0 ? void 0 : readConfigForm(current.settings, current.entryId));
+        },
+        currentCommand: opening.path,
+        liveKeys: liveMirrorKeys(),
+        discovery: Promise.resolve(),
         retryTimer: void 0,
         retriesPending: 0,
         disposed: false,
-        discovery: Promise.resolve(),
-        settingsGate,
-        resolveSettingsGate,
-        installed: void 0,
-        stderrNotice: "",
-        gatewayGate: Promise.resolve()
+        gatewayGate: Promise.resolve(),
+        gateCommand: "",
+        envProfile,
+        notifyKindsChanged: () => void 0,
+        connections: void 0
     };
+    return state;
 }
