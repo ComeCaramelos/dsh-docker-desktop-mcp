@@ -5,11 +5,18 @@ _reference/
 # Dependencies
 node_modules/
 
+# npm cache (workspace-local)
+.npm-cache/
+
 # Build / dist
 dist/
 
+# Build output (generated from src/*.ts by `npm run build`; never hand-edit)
+lib/
+
 # Docs
-docs/
+docs/*
+!docs/knowledge/
 
 # npm
 *.tgz
@@ -28,7 +35,12 @@ Thumbs.db
 
 # Editor
 .idea/
-.vscode/
+# VS Code settings stay ignored EXCEPT the committed workspace settings:
+# `typescript.tsdk` is what makes the editor resolve `@types/node` through the
+# checkout's own TypeScript instead of whichever one VS Code bundled (see
+# .vscode/settings.json). A blanket `.vscode/` would silently drop it.
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~

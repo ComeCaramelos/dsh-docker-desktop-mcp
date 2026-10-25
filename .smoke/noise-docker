@@ -1,0 +1,12 @@
+#!/bin/sh
+# Smoke shim for stderr-mode checks: answers `version` ok and
+# `mcp profile list` with sample profiles (so discovery succeeds), and on
+# every other call (the gateway spawn) prints ONE line to stderr and exits
+# 1. In "log" mode that line lands in the plugin gateway stderr log file;
+# in "console" mode it echoes on the dsh console. The line is the marker
+# for live log-mode vs console-mode checks.
+echo "ARGS: $*" >> "$(dirname "$0")/args.log"
+printf 'NOISE-GW-LINE\n' >&2
+if [ "$1" = "version" ]; then printf '99.99.99\n'; exit 0; fi
+if [ "$2" = "profile" ]; then printf '[{"id":"default","name":"Default Profile"}]\n'; exit 0; fi
+exit 1

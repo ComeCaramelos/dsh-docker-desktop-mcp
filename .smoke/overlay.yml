@@ -1,6 +1,11 @@
 # Smoke-boot overlay: load the docker-desktop-mcp plugin from the workspace
 # source. `name` is anchored beside this file by the dsh patch loader, so it
 # works from any clone: run `dsh web` from the repo root.
+# NOTE (component model): a row standing on its own never spawns and never
+# runs discovery — without a manager mounted the entry stays pending, so this
+# overlay answers only the inert path. To observe argv or a gateway spawn,
+# boot `overlay-manager.yml` (same shape, plus a seeded docker-profile entry).
+
 - insert:
     - id: mcp-docker
       name: '../lib/index.js'

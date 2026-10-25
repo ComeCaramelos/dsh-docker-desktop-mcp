@@ -1,81 +1,77 @@
 # @comecaramelos/dsh-docker-desktop-mcp
 
-DSH plugin that connects the **Docker Desktop MCP Toolkit** gateway
-(`docker mcp gateway run --profile <name>`) as an MCP server, with a **profile
-picker in the Web GUI** — instead of hardcoding `--profile` in the config row.
+Connects DeepSeek Harness to the **MCP Toolkit in Docker Desktop**: each connection runs
+one `docker mcp gateway run --profile <id>` gateway, and you pick the profile from the
+connection editor or straight from the chat composer.
+
+It is a **component** of the MCP connections bundle: it adds the `docker-profile`
+connection type to `@comecaramelos/dsh-mcp-manager`, which owns the connection list, the
+on/off switch and the live status.
+
+## Requirements
+
+- dsh `^0.2.0` (0.2.0 and 0.2.1), on Linux, WSL or Windows.
+- Docker Desktop with the MCP profiles feature turned on (Docker CE: `docker mcp feature
+  enable profiles`). Without it the profile pickers only offer the profiles you saved.
 
 ## Install
 
-From npm (recommended):
+Install the bundle; this component comes with it:
 
 ```sh
-dsh plugin --profile web add @comecaramelos/dsh-docker-desktop-mcp
+dsh plugin --profile web add @comecaramelos/dsh-mcp-manager-bundle
 ```
 
-The plugin inserts a `mcp-docker` row (id: `mcp-docker`, profile: `default`)
-into the Cordis bundle layer. If you already have a `mcp-docker` row in your
-profile's `cordis.patch.yml`, the bundle layer's insert is superseded by your
-row (later patches win by `id`).
+Coming from the standalone 0.0.x bundle (dsh 0.1)? Remove it first — both insert the
+`mcp-docker` row. Your old settings are kept: the connections card offers to create the
+matching connection.
 
-Manual install (WSL + Windows pnpm, where symlinks fail):
+**WSL:** Docker Desktop keeps its MCP profiles on the Windows side, so when the Windows
+`docker.exe` is reachable from WSL (`/Docker/host/bin/docker.exe`, or on your `PATH`) it
+is used for discovery and for the gateway. Set the connection's executable to another
+path to opt out.
 
-```sh
-mkdir -p ~/.dsh/profiles/web/node_modules/@comecaramelos
-ln -s /path/to/dsh-docker-desktop-mcp ~/.dsh/profiles/web/node_modules/@comecaramelos/dsh-docker-desktop-mcp
-# Add to ~/.dsh/profiles/web/package.json dependencies:
-#   "@comecaramelos/dsh-docker-desktop-mcp": "file:/path/to/dsh-docker-desktop-mcp"
-```
+## Use it
 
-Then replace (or create) your `dsh-mcp-client` row in
-`$DSH_HOME/profiles/web/cordis.patch.yml`:
+1. Plugins → MCP connections → **MCP connections** → *Add connection*, kind
+   **Docker MCP Toolkit**.
+2. Pick a **Profile** and the **Docker executable** to run it with. *Reduce
+   gateway log output* (on by default) keeps the gateway's progress lines out of the dsh
+   console and in a log file; the path shows under the connection.
+3. Turn it on. Its line shows `connected` and how many tools the gateway publishes.
 
-```yaml
-# before
-- id: mcp-docker
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: docker
-    transport: stdio
-    command: docker
-    args: ['mcp', 'gateway', 'run', '--profile', 'default']
+While the connection is on, a pill with the Docker mark under the chat box switches the
+profile without opening settings. Only one Docker connection is allowed.
 
-# after
-- id: mcp-docker
-  name: '@comecaramelos/dsh-docker-desktop-mcp'
-  config:
-    serverName: docker
-    profile: default
-```
+The component's own page (Plugins → MCP connections → **Docker MCP Toolkit**) keeps what
+this machine knows: your saved profiles and saved executables, each with a **Fetch**
+button that asks Docker what it can see and lets you pick what to add. Details in
+[docs/knowledge/card.md](docs/knowledge/card.md).
 
-### WSL + Docker Desktop (Windows)
+### Slash commands
 
-Docker Desktop keeps its MCP profiles in the Windows store
-(`C:\Users\<you>\.docker\mcp`), while the Linux CLI inside the distro reads the
-(usually empty) `~/.docker/mcp`. When `/Docker/host/bin/docker.exe` is
-executable on linux, discovery and the gateway spawn use it.
-Set `command` to an explicit path to opt out.
+- `/docker-profile <profile-id>` — switches the running connection to that profile.
+  With no argument it lists the profiles it knows.
+- `/docker-refresh` — asks Docker again for its profiles and adds new ones to the saved
+  list.
 
-## Why this over the default config
+## More
 
-- **Profile picker in Settings** — switch Docker MCP profiles without editing
-  `cordis.patch.yml`. Selection persists in `$DSH_HOME/settings.yaml`.
-- **Refresh profiles button** — runs `docker mcp profile list --format json`
-  and repopulates the select from the host.
-- **Hot reconnect** — picking a profile re-applies the gateway with the new
-  `--profile` in place; no restart needed.
-- **Profile precedence**: UI selection > `DSH_DOCKER_MCP_PROFILE` env var >
-  row config > `"default"`. Seed a machine default via env, switch per-run from UI.
+- [docs/knowledge/card.md](docs/knowledge/card.md) — the component page, Fetch, and
+  where the gateway log goes.
+- [docs/knowledge/development.md](docs/knowledge/development.md) — building and testing
+  from a checkout.
+- [CONTRIBUTING](CONTRIBUTING.md) · [AGENTS.md](AGENTS.md) (for coding agents)
 
 ---
 
 > # Legal notice
 >
-> This is an independent plugin that connects DeepSeek Harness to the MCP Toolkit
-> in Docker Desktop. It is not affiliated with, endorsed by, or sponsored by
-> Docker, Inc.
-> 
+> This is an independent plugin that connects DeepSeek Harness to the MCP
+> Toolkit in Docker Desktop. It is not affiliated with, endorsed by, or
+> sponsored by Docker, Inc.
+>
 > Docker is a trademark or registered trademark of Docker, Inc. in the United
 > States and/or other countries.
->
 
 [`CONTRIBUTING`](CONTRIBUTING.md) | [`LICENSE`](LICENSE.md)

@@ -1,0 +1,6 @@
+{
+    "meta": {
+        "title": "Docker MCP Toolkit",
+        "description": "Runs the MCP Toolkit gateway shipped with Docker Desktop as an MCP connection, with the profile picker on top of it. Not affiliated with, endorsed by, or sponsored by Docker, Inc."
+    }
+}

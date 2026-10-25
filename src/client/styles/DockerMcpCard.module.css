@@ -1,0 +1,55 @@
+/*
+ * The only rule this component's own card half draws.
+ *
+ * Everything else the card is made of — the card shell, the catalog rows, the
+ * disclosure, the candidate dialog — comes from `@comecaramelos/dsh-ancesters/
+ * client`, and each shared block ships and injects **its own** stylesheet under
+ * its own guarded id. This file therefore keeps only the class our own block
+ * names: the link-style button behind the two fetch links, built out of the
+ * shell's design aliases so the card re-themes with the GUI instead of standing
+ * out of it.
+ *
+ * The build (scripts/build-client.mjs) parses this with postcss — a syntax error
+ * fails `build:client` at the exact line — minifies it through esbuild's CSS
+ * pipeline and scopes every class name to `<hash>_<local>`; `styles/index.ts`
+ * injects the text once, guarded by `data-plugin-css`, and the block imports the
+ * scoped map as `STYLES`.
+ *
+ * A class that no block references is not a small mistake here: it is a rule
+ * that reads as if the card still owns a surface it no longer draws, which is
+ * exactly what the shared blocks made impossible. So the file stays short.
+ */
+
+.linkButton {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: 0 0;
+    font: inherit;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--dsw-alias-brand-primary);
+    cursor: pointer;
+}
+
+.linkButton:hover {
+    color: var(--dsw-alias-brand-primary-hover);
+    text-decoration: underline;
+}
+
+.linkButton:focus-visible {
+    outline: 2px solid var(--dsw-alias-brand-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.linkButton:disabled {
+    color: var(--dsw-alias-label-dimmed);
+    cursor: not-allowed;
+    text-decoration: none;
+}

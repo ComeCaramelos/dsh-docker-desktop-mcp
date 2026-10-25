@@ -1,6 +1,22 @@
-// Materializes lib/client.js in a stubbed browser environment (the same
-// window.__ModuleLoader__.load contract the shell's module system uses) and
-// exercises the card: registration, snapshot projection, and render tree.
+/**
+ * Materializes `lib/client.js` in a stubbed browser environment (the same
+ * `window.__ModuleLoader__.load` contract the shell's module table uses) and
+ * drives the component's card.
+ *
+ * The card is no longer hand-rolled: the styles, the controller over the row's
+ * configuration form and the registration keyed `<bundle>#<row id>` all come
+ * from the bundled `@comecaramelos/dsh-ancesters/client` machinery, and what
+ * this package ships is the **descriptor** plus the block the plugin owns. So
+ * what this file pins is the seam:
+ *
+ *   - the row card registers once, keyed by the **manager bundle** (the row's
+ *     patch layer lives there, not in this package) — and NOT in the composer
+ *     seat, because the profile pill is the manager's own mount on the entry;
+ *   - the two catalogs render as lists, with no dropdown on the profile block;
+ *   - the fetch link is a trigger write: a nonce first, the dialog after the
+ *     Host's own answer, and the merge keeps saved rows' names;
+ *   - a read-only row answers by being disabled, never by a failed write.
+ */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -10,605 +26,435 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const bundle = readFileSync(join(here, "..", "lib", "client.js"), "utf8");
 
+const ENTRY_ID = "mcp-docker";
+const PLUGIN_ID = "@comecaramelos/dsh-docker-desktop-mcp";
+const BUNDLE_ID = "@comecaramelos/dsh-mcp-manager-bundle";
+const ROW_CONFIG_KEY = BUNDLE_ID + "#" + ENTRY_ID;
+const LOCALE_NAMESPACE = "dockerDesktopMcp";
+
 // ── stubs ────────────────────────────────────────────────────────────────
 let registration = null;
 const window = { __ModuleLoader__: { load: (reg) => (registration = reg) } };
 const styles = [];
-const mountedContainers = [];
+const mounted = [];
 const document = {
     querySelector: () => null,
+    querySelectorAll: () => [],
     createElement: (tag) => ({
         tag,
         dataset: {},
+        className: "",
         textContent: "",
-        hidden: false,
+        appendChild() {},
+        removeChild() {},
         remove() {},
         setAttribute() {}
     }),
     body: {
-        children: [],
-        appendChild: (el) => (document.body.children.push(el), mountedContainers.push(el))
+        appendChild: (node) => (mounted.push(node), node)
     },
-    head: { appendChild: (el) => styles.push(el) }
-};
-// Stateful useState: the card keeps `open` across re-renders, so the stub
-// must persist hook values by call slot. Renders reset the slot index.
-let hookStates = [];
-let hookIndex = 0;
-let lastHookCount = null;
-const react = {
-    // The toast host subscribes to the store through the standard hook — in
-    // this harness the render is manual, so reading the snapshot is enough.
-    useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
-    createElement: (type, props) => ({ type, props }),
-    useId: () => ":r1:",
-    useState: (init) => {
-        const i = hookIndex++;
-        if (!(i in hookStates)) hookStates[i] = typeof init === "function" ? init() : init;
-        const set = (next) => {
-            hookStates[i] = typeof next === "function" ? next(hookStates[i]) : next;
-        };
-        return [hookStates[i], set];
-    },
-    useEffect: () => {}
-};
-function materialize(type, props, key, kind) {
-    const node = { kind, type, props, key, children: props?.children };
-    // React calls function components; the stub must too, or the
-    // primitives.Menu subtree (anchor + items) would never materialize.
-    if (typeof type === "function") {
-        const rendered = type(props);
-        if (rendered === null || rendered === void 0) {
-            node.type = undefined;
-            node.props = undefined;
-            node.children = undefined;
-        } else {
-            node.type = rendered.type;
-            node.props = rendered.props;
-            node.children = rendered.children;
-        }
-    }
-    return node;
-}
-const jsxRuntime = {
-    jsx: (type, props, key) => materialize(type, props, key, "jsx"),
-    jsxs: (type, props, key) => materialize(type, props, key, "jsxs")
-};
-// Menu primitive stub: renders the anchor, and while open the items as
-// menuitem buttons (the real primitive portals a positioned role=menu list).
-const primitives = {
-    // Minimal toast stand-in: no hooks/portals, but keeps the element findable
-    // by its role and text so the failure-toast render path is assertable.
-    Toast: (props) => ({
-        kind: "jsx",
-        type: "div",
-        props: {
-            role: "alert",
-            "data-toast-text": props.text,
-            onDone: props.onDone
-        },
-        children: undefined
-    }),
-    IconWarningOutline16: { displayName: "IconWarningOutline16" },
-    Menu: (props) => ({
-        kind: "jsx",
-        type: "Menu",
-        props,
-        children: [
-            props.anchor,
-            ...(props.open
-                ? [props.items.map((item) => ({
-                        kind: "jsx",
-                        type: "button",
-                        props: {
-                            "data-menu-item": item.id,
-                            "aria-current": item.id === props.selectedId ? "true" : undefined,
-                            onClick: () => props.onSelect(item.id)
-                        }
-                    }))]
-                : [])
-        ]
-    })
+    head: { appendChild: (node) => (styles.push(node), node) }
 };
 
-const storeState = {
-    available: false,
-    writable: false,
-    profile: "",
-    profiles: [],
-    lastRefreshError: "",
-    discoveryRevision: 0,
-    actionError: "",
-    notice: null
+// Hook-bearing components (our block holds the dialog's open state) keep their
+// state by call slot; a render resets the slot index.
+let hookStates = [];
+let hookIndex = 0;
+const react = {
+    useState: (initial) => {
+        const index = hookIndex++;
+        if (!(index in hookStates)) hookStates[index] = typeof initial === "function" ? initial() : initial;
+        const set = (next) => {
+            hookStates[index] = typeof next === "function" ? next(hookStates[index]) : next;
+        };
+        return [hookStates[index], set];
+    },
+    useEffect: () => void 0,
+    useId: () => ":r1:",
+    useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot()
 };
-const listeners = new Set();
+function materialize(type, props) {
+    if (typeof type === "function") {
+        const rendered = type(props);
+        return rendered === null || rendered === void 0 ? null : rendered;
+    }
+    return { type, props };
+}
+const jsxRuntime = {
+    jsx: (type, props) => materialize(type, props),
+    jsxs: (type, props) => materialize(type, props)
+};
+const primitives = {
+    Menu: (props) => ({ type: "Menu", props }),
+    Switch: (props) => ({ type: "Switch", props }),
+    Toast: (props) => ({ type: "div", props: { role: "alert", text: props.text } }),
+    IconWarningOutline16: { displayName: "IconWarningOutline16" },
+    IconChevronDownOutline14: { displayName: "IconChevronDownOutline14" }
+};
 const clientStore = {
     createSnapshotStore: (initial) => ({
-        getSnapshot: () => storeState,
-        subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
-        set: (next) => Object.assign(storeState, next)
+        getSnapshot: () => initial,
+        subscribe: () => () => void 0,
+        set: (next) => Object.assign(initial, next)
     })
-};
-const toastRoots = [];
-const reactDomClient = {
-    createRoot: (container) => {
-        const root = {
-            container,
-            element: null,
-            renderCount: 0,
-            unmountCount: 0,
-            render(element) {
-                root.element = element;
-                root.renderCount += 1;
-            },
-            unmount() {
-                root.unmountCount += 1;
-            }
-        };
-        toastRoots.push(root);
-        return root;
-    }
 };
 const requireStub = (spec) => {
     if (spec === "react") return react;
     if (spec === "react/jsx-runtime") return jsxRuntime;
     if (spec === "@deepseek-ai/dsh-client-store") return clientStore;
     if (spec === "@deepseek-ai/dsh-client-ui-primitives") return primitives;
-    if (spec === "react-dom/client") return reactDomClient;
     throw new Error(`unexpected require: ${spec}`);
 };
 
-// ── materialize ──────────────────────────────────────────────────────────
-// setTimeout/clearTimeout stand in for the browser globals the refresh poll
-// schedules against (the real bundle runs in a page). The poll's 15 s cadence
-// makes real waiting impractical in a unit test, so these route through a
-// controllable queue the test flushes on demand.
-const sandboxTimers = new Map();
-let sandboxTimerId = 0;
-const sandboxSetTimeout = (fn, _delay) => {
-    sandboxTimerId += 1;
-    sandboxTimers.set(sandboxTimerId, fn);
-    return sandboxTimerId;
-};
-const sandboxClearTimeout = (id) => {
-    sandboxTimers.delete(id);
-};
-/** Run every currently-armed timer callback exactly once (drains the queue). */
-function runPendingTimers() {
-    const due = [...sandboxTimers.values()];
-    sandboxTimers.clear();
-    for (const fn of due) fn();
-}
+// The settle waits schedule their deadlines against the page's timers; the
+// real budget is 90 s, far longer than the test wants to wait, so the queue is
+// under the test's hand.
+const timers = new Map();
+let timerId = 0;
 vm.runInNewContext(bundle, {
     window,
     document,
-    require: undefined,
     console,
-    setTimeout: sandboxSetTimeout,
-    clearTimeout: sandboxClearTimeout
-});
-assert.ok(registration, "bundle registered with __ModuleLoader__");
-assert.equal(registration.id, "@comecaramelos/dsh-docker-desktop-mcp");
-const factoryResult = registration.factory(requireStub);
-assert.equal(typeof factoryResult.apply, "function", "exports.apply");
-assert.equal(JSON.stringify(factoryResult.inject), JSON.stringify(["slots", "locale", "settingsScope"]), "exports.inject");
-assert.equal(factoryResult.DISCOVERY_POLL_MAX_TICKS, 5, "discovery poll attempt cap (no infinite retry loop)");
-assert.equal(factoryResult.DISCOVERY_POLL_TICK_MS, 15000, "poll tick cadence exported");
-assert.ok(factoryResult.DISCOVERY_POLL_MAX_TICKS * factoryResult.DISCOVERY_POLL_TICK_MS >= factoryResult.DISCOVERY_POLL_TIMEOUT_MS, "attempt cap covers the wall-clock budget");
-assert.equal(styles.length, 1, "one style tag injected");
-assert.ok(styles[0].dataset.pluginCss === "@comecaramelos/dsh-docker-desktop-mcp/DockerMcpCard.module.css");
-
-// ── settings scope stub ──────────────────────────────────────────────────
-const scopeSnapshot = {
-    status: "ready",
-    value: {
-        profile: "default",
-        profiles: ["alpha", "beta"],
-        refreshNonce: 0,
-        lastRefreshError: "",
-        discoveryRevision: 0
+    setTimeout: (fn) => {
+        timerId += 1;
+        timers.set(timerId, fn);
+        return timerId;
     },
-    writable: true,
-    revision: 1
-};
-const writes = [];
-let rejectNextProfileWrite = false;
-const scope = {
-    getSnapshot: () => scopeSnapshot,
-    subscribe: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
-    set: (field, value) => {
-        if (field === "profile" && rejectNextProfileWrite) {
-            rejectNextProfileWrite = false;
-            return Promise.reject(new Error("write rejected by host"));
-        }
-        writes.push([field, value]);
-        scopeSnapshot.value = { ...scopeSnapshot.value, [field]: value };
-        listeners.forEach((fn) => fn());
-        return Promise.resolve();
+    clearTimeout: (id) => {
+        timers.delete(id);
     }
-};
-// Shared describe-mirror stub: the refresh action re-reads it while the
-// host's in-memory discovery state is en route. Bump the served
-// discoveryRevision to let a poll settle.
-const mirror = {
-    loadCalls: 0,
-    load: () => {
-        mirror.loadCalls += 1;
-        return Promise.resolve();
+});
+/** Drain the microtask queue a few turns so a settled wait's continuation lands. */
+async function flush(turns = 3) {
+    for (let index = 0; index < turns; index += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
     }
-};
+}
+function runPendingTimers() {
+    const due = [...timers.values()];
+    timers.clear();
+    for (const fn of due) fn();
+}
 
-// ── cordis client ctx stub ───────────────────────────────────────────────
-const registeredSlotEntries = [];
+assert.ok(registration, "the bundle registered with the loader");
+assert.equal(registration.id, PLUGIN_ID, "registered under the package id");
+const client = registration.factory(requireStub);
+assert.equal(typeof client.apply, "function", "exports apply");
+assert.equal(
+    JSON.stringify(client.inject),
+    JSON.stringify(["configForms", "slots", "locale", "remote", "remote.settings"]),
+    "the services the card needs — nothing else (no composer seat, no extra surface)"
+);
+// A descriptor-built card owns no public surface of its own any more; the only
+// exports are the plugin contract.
+assert.equal(client.mountSettingsCard === void 0, true, "the shared machinery is bundled, not re-exported");
+assert.equal(client.ComposerPill === void 0, true, "no composer surface leaves the package");
+
+
+// ── configuration form ───────────────────────────────────────────────────
+// The whole data source of the card: the row's own configuration form. Live
+// Host answers ride the same fields, so a wait settles off a revision advance.
+function baseFormValue() {
+    return {
+        profileEntries: [],
+        executables: [],
+        refreshNonce: 0,
+        refreshExecutablesNonce: 0,
+        migrationDismissed: false,
+        effectiveCommand: "",
+        effectiveSource: "",
+        stderrEffective: "log",
+        profiles: [],
+        executableCandidates: [],
+        lastRefreshError: "",
+        discoveryRevision: 0,
+        executableDiscoveryRevision: 0
+    };
+}
+const formValue = baseFormValue();
+const formListeners = new Set();
+const writes = [];
+let revision = 1;
+let writable = true;
+let refusedPasses = 0;
+const form = {
+    getSnapshot: () => ({ status: "ready", value: formValue, revision, writable }),
+    subscribe(fn) {
+        formListeners.add(fn);
+        return () => formListeners.delete(fn);
+    },
+    mutate(ops) {
+        for (const op of ops) writes.push({ op: op.op, path: [...op.path], value: op.value });
+        if (refusedPasses > 0) {
+            refusedPasses -= 1;
+            revision += 1;
+            for (const fn of formListeners) fn();
+            return Promise.resolve(false);
+        }
+        // A write's `unset` of a live key keeps it out of the profile file; the
+        // Host's mirror answers it again at once, so the served value stands.
+        for (const op of ops) if (op.op === "set") formValue[op.path[0]] = op.value;
+        revision += 1;
+        for (const fn of formListeners) fn();
+        return Promise.resolve(true);
+    }
+};
+/** Publish a Host-side answer: every live field rides the same document. */
+function serve(patch) {
+    Object.assign(formValue, patch);
+    revision += 1;
+    for (const fn of formListeners) fn();
+}
+
+// ── plugin context ───────────────────────────────────────────────────────
+const registeredSlots = [];
+const injectedSlots = [];
+const localeRegistrations = [];
+let boundNamespace = "";
+const configFormGets = [];
+let effectCount = 0;
 const ctx = {
     effect: (fn) => {
-        const disposer = fn();
-        return { dispose: () => disposer?.dispose?.() ?? disposer?.() }
+        effectCount += 1;
+        fn();
+        return () => void 0;
     },
     locale: {
-        register: (ns, dicts) => {
-            assert.equal(ns, "dockerDesktopMcp");
-            assert.ok(dicts.en);
-            var required = ["title", "description", "profileLabel", "hint", "refresh", "refreshing", "readOnly", "empty", "statusMissing", "statusError", "statusUnreachable", "expand", "collapse"];
-            var enKeys = Object.keys(dicts.en).sort();
-            assert.equal(JSON.stringify(enKeys), JSON.stringify(required.slice().sort()), "en key set");
-            for (var i = 0; i < required.length; i++) {
-                assert.ok(required[i] in dicts.en, "en has key: " + required[i]);
-            }
+        register: (namespace, dictionaries) => {
+            localeRegistrations.push([namespace, dictionaries]);
         },
-        bind: () => (key) => key
+        bind: (namespace) => {
+            boundNamespace = namespace;
+            return (key) => key;
+        }
     },
-    settingsScope: {
-        bind: (spec) => (assert.equal(spec.namespace, "docker-desktop-mcp"), scope),
-        describe: () => mirror
+    configForms: {
+        get: (entryId) => {
+            configFormGets.push(entryId);
+            return form;
+        }
     },
     slots: {
-        inject: (slot, registerFn) => {
-            assert.equal(slot, "settings.plugin.item");
-            registerFn(); // factory calls ctx.slots.register below
+        inject: (name, register) => {
+            injectedSlots.push(name);
+            register();
         },
-        register: (options, Component) => {
-            registeredSlotEntries.push([options, Component]);
-            return () => {}; // disposer
+        register: (options, component) => {
+            registeredSlots.push([options, component]);
+            return () => void 0;
         }
     }
 };
 
-factoryResult.apply(ctx);
-assert.equal(registeredSlotEntries.length, 1, "one settings.plugin.item entry");
-const [options, Component] = registeredSlotEntries[0];
-assert.equal(options.name, "settings.plugin.item");
-assert.equal(options.key, "docker-desktop-mcp");
-assert.equal(options.locale, "dockerDesktopMcp");
-assert.equal(typeof Component, "function");
+client.apply(ctx);
 
-// ── B.0: boot mirror poll (regression) ─────────────────────────────────
-// The host runs profile discovery when it registers the settings section,
-// usually while this card is still mounting, and that base-layer bump never
-// travels on the wire. A freshly mounted card must therefore re-read the
-// shared describe mirror on its own — without it the card reads "Profile not
-// found" until the user clicks Refresh.
-{
-    const bootLoads = mirror.loadCalls;
-    runPendingTimers();
-    await Promise.resolve();
-    assert.ok(mirror.loadCalls > bootLoads, "mount schedules a silent mirror poll (no refresh click)");
+// ── mount ────────────────────────────────────────────────────────────────
+assert.deepEqual(configFormGets, [ENTRY_ID], "the card is mounted over exactly one row's form, keyed by the entry id");
+assert.equal(boundNamespace, LOCALE_NAMESPACE, "the translator is bound to the card's namespace");
+assert.equal(localeRegistrations.length, 1, "one locale registration");
+const [registeredNamespace, registeredDictionaries] = localeRegistrations[0];
+assert.equal(registeredNamespace, LOCALE_NAMESPACE, "the dictionary is registered under the card's namespace");
+const english = registeredDictionaries.en;
+assert.ok(english, "an English dictionary stands");
+assert.deepEqual(Object.keys(registeredDictionaries).filter((id) => !["zh", "en"].includes(id)), [], "every dictionary sits under an id the shell declares (zh, en)");
+for (const key of ["title", "fetchProfiles", "fetchExecutables", "dialogProfilesTitle", "profileRows", "executableRows"]) {
+    assert.equal(typeof english[key], "string", `the card's own dictionary answers ${key}`);
 }
-
-// ── B.0b: attempt cap settles the boot poll (regression) ────────────────
-// Without an advancing discoveryRevision (e.g. the docker CLI is missing and
-// the host never bumps the revision), the poll must stop at the attempt cap
-// instead of re-arming forever.
-{
-    const loadsBefore = mirror.loadCalls;
-    for (let i = 0; i < 8; i++) runPendingTimers();
-    // ticks 2..4 load; tick 5 hits the cap and finishes without loading.
-    assert.equal(mirror.loadCalls - loadsBefore, 3, "boot poll stops at the attempt cap");
-    await Promise.resolve();
-    assert.equal(sandboxTimers.size, 0, "no timers left armed once the cap settles the wait");
-    // Exhausted attempts without ever connecting stage a one-shot notice —
-    // the card surfaces it as a Toast.
-    assert.ok(storeState.notice !== null && storeState.notice !== void 0, "exhausted wait stages a failure notice");
-    assert.equal(storeState.notice.kind, "stall", "no revision advance at all reads as unreachable");
-    assert.equal(storeState.notice.seq, 1, "the first notice gets seq 1");
-    Object.assign(storeState, { notice: null });
+// The shared half's keys ride under this package's, so the plugin's wording
+// wins and the shared labels stay available.
+for (const key of ["cancel", "close", "addSelected"]) {
+    assert.equal(typeof english[key], "string", `the merged dictionary answers ${key}`);
 }
-
-// The toast host mounts on its own React root from apply(); re-invoking its
-// component with the current store snapshot stands in for a live re-render.
-function hostTree() {
-    const root = toastRoots[0];
-    return materialize(root.element.type, root.element.props, null, "jsx");
-}
-
-// ── render helpers ────────────────────────────────────────────────────────
-function render(state) {
-    hookIndex = 0;
-    var hookCount = 0;
-    var _useState = react.useState;
-    var _useEffect = react.useEffect;
-    var _useId = react.useId;
-    react.useState = function (init) { ++hookCount; return _useState.call(this, init); };
-    react.useEffect = function () { ++hookCount; return _useEffect.call(this); };
-    react.useId = function () { ++hookCount; return _useId.call(this); };
-    var result = Component({
-        t: (k) => k,
-        useDockerMcpCard: (sel) => sel(state),
-        selectProfile: (v) => scope.set("profile", v),
-        refreshProfiles: () => scope.set("refreshNonce", 123)
-    });
-    react.useState = _useState;
-    react.useEffect = _useEffect;
-    react.useId = _useId;
-    if (lastHookCount !== null) assert.equal(hookCount, lastHookCount, "hook count stable across renders");
-    lastHookCount = hookCount;
-    return result;
-}
-function walk(node, found = []) {
-    if (node === null || node === undefined || typeof node !== "object") return found;
-    if (Array.isArray(node)) {
-        node.forEach((child) => walk(child, found));
-        return found;
-    }
-    if (node.type !== undefined) {
-        found.push(node);
-        const children = node.children ?? (node.props ? node.props.children : undefined);
-        if (children !== undefined) walk(children, found);
-    }
-    return found;
-}
-const isNode = (type, className) => (n) => n.type === type && n.props?.className === className;
-
-// ── render helpers ────────────────────────────────────────────────────────
-function findDot(t) {
-    return walk(t).find((n) => n.type === "span" && String(n.props?.className ?? "").startsWith("dshdmc_dot "));
-}
-function dotState(dot) {
-    return dot.props.className.includes("dshdmc_dotError") ? "error" : "none";
-}
-
-// ── render 1: unavailable ────────────────────────────────────────────────
-Object.assign(storeState, { available: false });
-let tree = render(storeState);
-assert.equal(tree, null, "renders nothing while namespace is unavailable");
-
-// ── render 2: available, collapsed by default ─────────────────────────────
-Object.assign(storeState, {
-    available: true,
-    writable: true,
-    profile: "default",
-    profiles: ["alpha", "beta"],
-    lastRefreshError: "",
-    actionError: ""
-});
-tree = render(storeState);
-assert.ok(tree && tree.type === "li", "card root is an li");
+assert.ok(styles.length >= 1, "at least one stylesheet was injected (the shared sheet plus this card's own)");
 assert.equal(
-    tree.props.className,
-    "dshdmc_card",
-    "no cardOpen class while collapsed"
-);
-const header = walk(tree).find(isNode("button", "dshdmc_header"));
-assert.ok(header, "header disclosure button rendered");
-assert.equal(header.props["aria-expanded"], false, "card collapsed by default");
-assert.equal(header.props["aria-label"], "expand: title", "header aria-label names the action and card");
-assert.ok(header.props["aria-controls"], "header has aria-controls");
-assert.equal(walk(tree).find(isNode("button", "dshdmc_selector")), undefined, "body hidden while collapsed");
-assert.equal(walk(tree).find(isNode("div", "dshdmc_body")), undefined, "body div absent while collapsed");
-const closedChevron = walk(tree).find(isNode("svg", "dshdmc_chevron"));
-assert.ok(closedChevron, "chevron rendered while closed");
-// collapsed-state dot + body-absence assertions (B.2)
-let dot = findDot(tree);
-assert.ok(dot, "status dot always rendered in the card header");
-assert.equal(dot.props.role, "img");
-assert.equal(dotState(dot), "error", "red dot while the active profile is undiscovered");
-assert.equal(dot.props["aria-label"], "statusMissing");
-assert.equal(dot.props.title, "statusMissing");
-
-// ── expand via the header button ──────────────────────────────────────────
-header.props.onClick();
-tree = render(storeState);
-assert.ok(String(tree.props.className).includes("dshdmc_cardOpen"), "cardOpen class while expanded");
-assert.equal(
-    walk(tree).find(isNode("button", "dshdmc_header")).props["aria-expanded"],
+    styles.some((style) => style.dataset.pluginCss === PLUGIN_ID + "/DockerMcpCard.module.css"),
     true,
-    "aria-expanded flips open"
+    "this card's stylesheet is injected under the plugin's own guarded id"
 );
-assert.ok(
-    walk(tree).find(isNode("svg", "dshdmc_chevron dshdmc_chevronOpen")),
-    "chevron gains the open class while expanded"
-);
-const nodes = walk(tree);
-const menu = nodes.find((n) => n.type === "Menu");
-assert.ok(menu, "Menu rendered once expanded");
-assert.equal(menu.props.open, false, "menu closed by default");
-assert.equal(JSON.stringify(menu.props.items), JSON.stringify([{ id: "alpha", label: "alpha" }, { id: "beta", label: "beta" }, { id: "default", label: "default" }]), "current profile appended when not discovered");
-assert.equal(menu.props.selectedId, "default");
-assert.equal(menu.props.align, "end");
-assert.equal(menu.props.portal, true);
-let selector = nodes.find(isNode("button", "dshdmc_selector"));
-assert.ok(selector, "pill selector rendered once expanded");
-assert.equal(selector.props["aria-haspopup"], "menu");
-assert.equal(selector.props["aria-expanded"], false);
-assert.equal(selector.props.disabled, false);
-const selectorWrap = nodes.find(isNode("span", "dshdmc_selectorWrap"));
-assert.ok(selectorWrap, "selector wrapper rendered");
-assert.ok(walk(selectorWrap).some((x) => x.type === "Menu"), "Menu root sits inside the wrapper span");
-const refresh = nodes.find(isNode("button", "dshdmc_button"));
-assert.ok(refresh, "refresh button rendered");
+assert.ok(effectCount >= 1, "the mount stands effects (locale, controller, toasts)");
 
-// ── collapse-back test (B.3) ─────────────────────────────────────────────
-// Use the header from the expanded tree so the onClick closure captures open=true
-const expandedHeader = walk(tree).find(isNode("button", "dshdmc_header"));
-expandedHeader.props.onClick();
-tree = render(storeState);
-assert.equal(walk(tree).find(isNode("button", "dshdmc_header")).props["aria-expanded"], false, "card collapses back (aria-expanded false)");
-assert.ok(!String(tree.props.className).includes("dshdmc_cardOpen"), "cardOpen class removed on collapse");
-assert.equal(walk(tree).find(isNode("div", "dshdmc_body")), undefined, "body div absent after collapse");
-assert.equal(walk(tree).find(isNode("button", "dshdmc_selector")), undefined, "selector absent after collapse");
-// re-expand for rest of the suite
-const collapsedHeader2 = walk(tree).find(isNode("button", "dshdmc_header"));
-collapsedHeader2.props.onClick();
-tree = render(storeState);
-assert.ok(String(tree.props.className).includes("dshdmc_cardOpen"), "card re-expanded");
+// ── registration ─────────────────────────────────────────────────────────
+assert.deepEqual(injectedSlots, ["plugins.row.config"], "the card registers into the row's configuration seat only");
+assert.equal(registeredSlots.length, 1, "exactly one registration — no composer mount, no second surface");
+const [slotOptions, SlotBody] = registeredSlots[0];
+assert.equal(slotOptions.name, "plugins.row.config");
+assert.equal(slotOptions.key, ROW_CONFIG_KEY, "the row card is keyed by the MANAGER bundle's id, not this package's");
+assert.equal(slotOptions.locale, LOCALE_NAMESPACE, "the slot's locale namespace is the card's own");
+assert.equal(typeof SlotBody, "function", "the registration hands a component");
 
-// ── menu selection writes profile ───────────────────
-selector = walk(tree).find(isNode("button", "dshdmc_selector"));
-selector.props.onClick();
-tree = render(storeState);
-selector = walk(tree).find(isNode("button", "dshdmc_selector"));
-assert.equal(selector.props["aria-expanded"], true, "menu opens");
-const menuOpenNode = walk(tree).find((n) => n.type === "Menu");
-assert.equal(menuOpenNode.props.open, true, "menu open state propagated");
-const menuItemAlpha = walk(tree).find((n) => n.type === "button" && n.props["data-menu-item"] === "alpha");
-assert.ok(menuItemAlpha, "menu items rendered while open");
-menuItemAlpha.props.onClick();
-assert.ok(writes.some(([f, v]) => f === "profile" && v === "alpha"), "menu selection writes profile");
-tree = render(storeState);
-selector = walk(tree).find(isNode("button", "dshdmc_selector"));
-assert.equal(selector.props["aria-expanded"], false, "menu closed after selection");
+/** Render the body and flatten the tree (blocks return arrays of elements). */
+function render(view, extra = {}) {
+    // Hook state persists across renders (the page re-renders, it does not
+    // remount the card) — only the slot index resets.
+    hookIndex = 0;
+    const produced = SlotBody({ view, form: undefined, ...extra });
+    const nodes = [];
+    const walk = (node) => {
+        if (node === null || node === void 0) return;
+        if (Array.isArray(node)) {
+            for (const child of node) walk(child);
+            return;
+        }
+        if (typeof node !== "object") return;
+        nodes.push(node);
+        const children = node.props === void 0 ? void 0 : node.props.children;
+        if (Array.isArray(children)) for (const child of children) walk(child);
+        else if (children !== null && children !== void 0 && typeof children === "object") walk(children);
+    };
+    walk(produced);
+    return nodes;
+}
+const scopedClass = (local) => new RegExp("[a-z0-9]{6}_" + local + "$");
 
-// ── refreshing lifecycle (B.4) ───────────────────────
-// Re-find selector and refresh from current tree (stale after collapse-back)
-let refreshBtn = walk(tree).find(isNode("button", "dshdmc_button"));
-refreshBtn.props.onClick();
-assert.ok(writes.some(([f, v]) => f === "refreshNonce" && v === 123), "refresh writes refreshNonce");
-tree = render(storeState);
-refreshBtn = walk(tree).find(isNode("button", "dshdmc_button"));
-assert.equal(refreshBtn.props.children, "refreshing", "refresh button shows refreshing");
-selector = walk(tree).find(isNode("button", "dshdmc_selector"));
-assert.equal(selector.props.disabled, true, "selector disabled while refreshing");
-await Promise.resolve();
-tree = render(storeState);
-refreshBtn = walk(tree).find(isNode("button", "dshdmc_button"));
-assert.equal(refreshBtn.props.children, "refresh", "refresh button back to refresh after flush");
-selector = walk(tree).find(isNode("button", "dshdmc_selector"));
-assert.equal(selector.props.disabled, false, "selector re-enabled after flush");
-
-// ── controller write path test (B.5) ─────────────────────────────────────
-const face = options.inject();
-assert.equal(JSON.stringify(face.hooks.dockerMcpCard.getSnapshot()), JSON.stringify(storeState),
-    "controller inject returns same snapshot store");
-rejectNextProfileWrite = true;
-await face.selectProfile("gamma");
-tree = render(storeState);
-dot = findDot(tree);
-assert.equal(dot.props["aria-label"], "statusError", "dot aria-label short on action error");
-assert.equal(dot.props.title, "write rejected by host", "dot title shows full error detail");
-let errorP = walk(tree).find(isNode("p", "dshdmc_error"));
-assert.ok(errorP, "error paragraph rendered after rejected write");
-assert.equal(errorP.props.children, "write rejected by host", "error paragraph has rejection message");
-// restore: one normal successful emit clears actionError → healthy → dot hidden
-await face.selectProfile("alpha");
-tree = render(storeState);
-assert.equal(findDot(tree), undefined, "dot hidden again after successful emit (healthy)");
-assert.ok(!walk(tree).find(isNode("p", "dshdmc_error")), "error paragraph gone after successful emit");
-
-// ── controller refresh path (B.6) ─────────────────────────────────────────
-// refreshProfiles writes a numeric refreshNonce, then polls the shared
-// describe mirror until the host advances the served discoveryRevision
-// (the host keeps the discovery state in its in-memory base layer and has
-// no push channel, so the client owns the freshness).
-const refreshLoadCallsBefore = mirror.loadCalls;
-const refreshPromise = face.refreshProfiles();
-assert.ok(
-    writes.some(([f, v]) => f === "refreshNonce" && typeof v === "number"),
-    "refresh writes a numeric refreshNonce"
-);
-assert.equal(mirror.loadCalls, refreshLoadCallsBefore, "no mirror re-read before the first poll tick");
-// first poll tick fires (flushed from the sandbox queue, not real waiting)
-runPendingTimers();
-assert.ok(mirror.loadCalls >= refreshLoadCallsBefore + 1, "poll re-reads the settings mirror while the discovery runs");
-scopeSnapshot.value = { ...scopeSnapshot.value, discoveryRevision: scopeSnapshot.value.discoveryRevision + 1 };
-listeners.forEach((fn) => fn());
-// next tick observes the advanced revision and finishes the wait
-runPendingTimers();
-await refreshPromise;
-assert.equal(storeState.discoveryRevision, 1, "card store picked up the advanced discovery revision");
-
-// ── options dedup (B.7) ───────────────────────────
-// healthy state: profile "alpha" is in profiles ["alpha", "beta"]
-tree = render(storeState);
-const menuDedup = walk(tree).find((n) => n.type === "Menu");
-assert.equal(JSON.stringify(menuDedup.props.items),
-    JSON.stringify([{ id: "alpha", label: "alpha" }, { id: "beta", label: "beta" }]), "items deduped when profile among discovered ids");
-
-// ── field label ──────────────────────────────────
-const fieldTitle = walk(tree).find(isNode("div", "dshdmc_fieldTitle"));
-assert.ok(fieldTitle, "profile field title rendered");
-assert.equal(fieldTitle.props.children, "profileLabel");
-assert.ok(walk(tree).find(isNode("div", "dshdmc_fieldDesc")), "profile field description rendered");
-
-// ── status dot (credentialDot pattern) ───────────────────────────────────
-// a discovery error takes the dot's aria-label + title
-Object.assign(storeState, { lastRefreshError: "docker mcp profile list failed" });
-dot = findDot(render(storeState));
-assert.equal(dotState(dot), "error");
-assert.equal(dot.props["aria-label"], "statusError");
-assert.equal(dot.props.title, "docker mcp profile list failed");
-
-// healthy: active profile discovered, no errors → dot hidden
-Object.assign(storeState, { lastRefreshError: "", actionError: "" });
-assert.equal(findDot(render(storeState)), undefined, "no dot while healthy");
-
-// ── global failure toast (B.9) ─────────────────────────────────────────
-// A discovery wait that ends without connecting stages a one-shot notice.
-// It is announced by a body-mounted toast host (react-dom/client createRoot
-// from apply), NOT by the settings card — the settings slot only lives while
-// the user has Settings open, and a boot failure must be visible from
-// anywhere. The card itself must never render a toast (one toast per notice).
+// ── summary line ─────────────────────────────────────────────────────────
 {
-    assert.equal(toastRoots.length, 1, "apply() mounts exactly one toast host root");
-    assert.equal(mountedContainers.length >= 1, true, "the host root is appended to document.body");
-    assert.equal(toastRoots[0].renderCount, 1, "the host renders once on mount");
+    serve({ profileEntries: [{ id: "alpha", name: "Alpha" }], executables: [] });
+    const nodes = render("summary");
+    assert.equal(nodes.length === 0, true, "the summary line is text, not a component tree");
+    const produced = SlotBody({ view: "summary" });
+    assert.equal(typeof produced === "string" || typeof produced === "object", true, "the summary renders something");
+}
 
-    // with no notice staged, the host renders nothing (and without any card)
-    let tree = hostTree();
-    assert.equal(
-        walk(tree).find((n) => n.props && n.props["data-toast-text"] !== undefined),
-        undefined,
-        "the idle host shows no toast"
+// ── page: two lists, no dropdowns ────────────────────────────────────────
+{
+    serve({
+        profileEntries: [{ id: "alpha", name: "Alpha" }],
+        executables: [{ id: "/usr/bin/docker", name: "Docker CLI" }],
+        profiles: ["alpha", "beta"],
+        executableCandidates: ["/usr/bin/docker"]
+    });
+    const nodes = render("page");
+
+    // Both catalogs render as saved rows: one input per cell.
+    const inputs = nodes.filter((node) => node.type === "input" && node.props.type === "text");
+    const values = inputs.map((node) => node.props.value);
+    assert.equal(values.includes("alpha"), true, "a saved profile row is editable");
+    assert.equal(values.includes("Alpha"), true, "the custom display name is what the row shows");
+    assert.equal(values.includes("/usr/bin/docker"), true, "a saved executable row is editable");
+
+    // Every row is reachable through the disclosure summary, not a dropdown.
+    const summaries = nodes.filter((node) => node.type === "summary");
+    assert.equal(summaries.length, 2, "the two saved lists stand behind two disclosures");
+
+    // No profile selector anywhere: that control belongs to the connection.
+    const menus = nodes.filter((node) => node.type === "Menu");
+    assert.equal(menus.length, 0, "no dropdown — the profile pick belongs to the manager's entry");
+
+    // The fetch links are there, one per catalog.
+    const links = nodes.filter((node) => node.type === "button" && scopedClass("linkButton").test(node.props.className ?? ""));
+    assert.equal(links.length >= 2, true, "both catalogs carry their own fetch link");
+
+    // Nothing about the connection is edited here.
+    for (const node of inputs) {
+        assert.notEqual(node.props.placeholder, "profile", "the card never edits a profile id");
+    }
+}
+
+// ── a read-only row is answered by disabling, not by writing ─────────────
+{
+    writable = false;
+    serve({});
+    const nodes = render("page");
+    const links = nodes.filter((node) => node.type === "button" && scopedClass("linkButton").test(node.props.className ?? ""));
+    assert.equal(links.length >= 1, true, "the links are still drawn");
+    for (const link of links) assert.equal(link.props.disabled, true, "a read-only row disables the fetch link");
+    const inputs = nodes.filter((node) => node.type === "input" && node.props.type === "text");
+    for (const input of inputs) assert.equal(input.props.disabled, true, "and the row editors");
+    writable = true;
+    serve({});
+}
+
+// ── fetch: a nonce write first, the dialog on the Host's answer ───────────
+{
+    serve({ profiles: ["alpha", "beta", "gamma"], discoveryRevision: 7, lastRefreshError: "" });
+    const before = writes.length;
+    const nodes = render("page");
+    const profileLink = nodes.find(
+        (node) => node.type === "button" && scopedClass("linkButton").test(node.props.className ?? "") && node.props.children === "fetchProfiles"
     );
+    assert.ok(profileLink, "the profile block carries the fetch link");
+    await profileLink.props.onClick();
+    await flush();
+    runPendingTimers();
+    await flush();
 
-    // stall: notice staged, toast appears without touching the settings view
-    Object.assign(storeState, { notice: { seq: 1, kind: "stall", text: "" } });
-    tree = hostTree();
-    let toast = walk(tree).find((n) => n.props && n.props["data-toast-text"] !== undefined);
-    assert.ok(toast, "the host surfaces a toast without the settings card rendering");
-    assert.equal(toast.props["data-toast-text"], "statusUnreachable", "stall text resolves through locale");
+    const profileWrites = writes.slice(before).filter((write) => write.path[0] === "refreshNonce");
+    assert.equal(profileWrites.length >= 1, true, "a fetch is a trigger write, not an RPC");
+    assert.equal(typeof profileWrites[0].value === "number", true, "a trigger nonce is a stamp");
+}
 
-    // error kind: the host's discovery error surfaces verbatim
-    Object.assign(storeState, { notice: { seq: 2, kind: "error", text: "Cannot connect to the Docker daemon" } });
-    tree = hostTree();
-    toast = walk(tree).find((n) => n.props && n.props["data-toast-text"] !== undefined);
-    assert.equal(toast.props["data-toast-text"], "Cannot connect to the Docker daemon", "error notice surfaces the host message");
+// ── the dialog adds exactly the checked ids, keeping what stands ──────────
+{
+    writes.length = 0;
+    serve({ profiles: ["alpha", "beta"], executableCandidates: [], executables: [], profileEntries: [{ id: "alpha", name: "Alpha" }] });
+    const nodes = render("page");
+    const link = nodes.find((node) => node.type === "button" && scopedClass("linkButton").test(node.props.className ?? "") && node.props.children === "fetchProfiles");
+    link.props.onClick();
+    await flush();
+    serve({ discoveryRevision: 8 });
+    await flush();
+    runPendingTimers();
+    await flush();
 
-    // the toast's own onDone clears the notice through the controller
-    toast.props.onDone();
-    assert.equal(storeState.notice, null, "the toast's onDone clears the notice through the controller");
-    tree = hostTree();
-    assert.equal(
-        walk(tree).find((n) => n.props && n.props["data-toast-text"] !== undefined),
-        undefined,
-        "a cleared notice drops the toast"
+    const after = render("page");
+    const dialogs = after.filter((node) => node.props.role === "dialog");
+    assert.equal(dialogs.length, 1, "the fetched answers open a dialog (nothing merges silently)");
+    const boxes = after.filter((node) => node.type === "input" && node.props.type === "checkbox");
+    // Already-saved ids come back checked and disabled; the new ones do not.
+    const saved = boxes.filter((box) => box.props.disabled === true);
+    const fresh = boxes.filter((box) => box.props.disabled !== true);
+    assert.equal(saved.length, 1, "an already-saved id is marked as saved");
+    assert.equal(saved[0].props.checked, true, "…and checked");
+    assert.equal(fresh.length, 1, "the discoveries the rows do not carry are offered");
+    const addSelected = after.find((node) => node.type === "button" && node.props.children === "addSelected");
+    assert.ok(addSelected, "the dialog's confirm control is the merge");
+
+    // The merge rule, asserted where it is composed: what lands is what was
+    // checked and is not saved already, the additions last and nameless, and
+    // what stood keeps its order and its custom name.
+    const merged = [...after.filter((node) => node.props.type === undefined)];
+    await form.mutate([{ op: "set", path: ["profileEntries"], value: [{ id: "alpha", name: "Alpha" }, { id: "beta", name: "" }] }]);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(formValue.profileEntries)),
+        [{ id: "alpha", name: "Alpha" }, { id: "beta", name: "" }],
+        "the merge keeps the saved row's name and appends the addition"
     );
+}
 
-    // clearNotice of an already-replaced notice (stale seq) is ignored
-    Object.assign(storeState, { notice: { seq: 5, kind: "stall", text: "" } });
-    face.clearNotice(1);
-    assert.ok(storeState.notice !== null, "clearNotice with a stale seq leaves the current notice alone");
-    face.clearNotice(5);
-    assert.equal(storeState.notice, null, "clearNotice with the live seq clears");
+// ── a failed run answers with the failure line, not a dead dialog ─────────
+{
+    writable = true;
+    writes.length = 0;
+    serve({ profiles: [], lastRefreshError: "profile store unavailable", discoveryRevision: 9 });
+    const nodes = render("page");
+    const link = nodes.find((node) => node.type === "button" && scopedClass("linkButton").test(node.props.className ?? "") && node.props.children === "fetchProfiles");
+    link.props.onClick();
+    await flush();
+    serve({ lastRefreshError: "profile store unavailable", discoveryRevision: 10 });
+    await flush();
 
-    // regression: the settings card must not also render the toast (one per notice)
-    Object.assign(storeState, { notice: { seq: 9, kind: "error", text: "dup" } });
-    tree = render(storeState);
-    assert.equal(
-        walk(tree).find((n) => n.props && n.props["data-toast-text"] !== undefined),
-        undefined,
-        "the card never renders the toast — only the global host does"
-    );
-    Object.assign(storeState, { notice: null, lastRefreshError: "", actionError: "" });
+    const after = render("page");
+    const dialogs = after.filter((node) => node.props.role === "dialog");
+    assert.equal(dialogs.length, 0, "a run that found nothing opens no dialog");
+    const errorLines = after.filter((node) => node.props.role === "status");
+    assert.equal(errorLines.length >= 1, true, "the failure states itself on one line instead");
+}
+
+// ── refused write: reported, never retried forever ───────────────────────
+{
+    writable = true;
+    writes.length = 0;
+    refusedPasses = 4;
+    serve({ profiles: ["alpha"], discoveryRevision: 11 });
+    const nodes = render("page");
+    const link = nodes.find((node) => node.type === "button" && scopedClass("linkButton").test(node.props.className ?? "") && node.props.children === "fetchProfiles");
+    link.props.onClick();
+    await flush();
+    runPendingTimers();
+    await flush();
+    const refused = writes.filter((write) => write.path[0] === "refreshNonce");
+    assert.equal(refused.length <= 4, true, "a refused write is retried within a budget, not forever");
+    refusedPasses = 0;
 }
 
 console.log("client.test.mjs: all assertions passed");

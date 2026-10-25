@@ -1,0 +1,25 @@
+# Live check: the component mounted on a manager that is present.
+#
+# Two rows land in one document — the manager plugin row (which owns the
+# connection pool) and THIS component's row. `name` anchors beside this file:
+# `../lib/index.js` is this checkout's host half, the manager's row points at
+# its own checkout. The pool's one `docker-profile` entry is seeded through the
+# manager's own `servers` field so the kind's `resolve()` is the thing that
+# spawns; the row config's `command` is the shim every run reads through.
+- insert:
+    - id: mcp-manager
+      name: '../../dsh-mcp-manager/lib/index.js'
+      config:
+        servers:
+            - id: docker
+              kind: docker-profile
+              enabled: true
+              extra:
+                  profile: demo
+    - id: mcp-docker
+      name: '../lib/index.js'
+      config:
+        command: .smoke/fake-docker
+        profileEntries:
+            - id: demo
+              name: Demo profile

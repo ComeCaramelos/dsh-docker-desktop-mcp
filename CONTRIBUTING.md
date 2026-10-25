@@ -10,7 +10,9 @@ npm install
 npm test
 ```
 
-- Tests are plain `node:assert` scripts (`node test/<name>.test.mjs`), run through `npm test`.
+- Tests are plain `node:assert` scripts, discovered by `npm test` (`npm run build && node --test`). A single file can also be run on its own: `node test/<name>.test.mjs`.
+- npm 11 skips dependency install scripts unless the package is allowed, and `esbuild` has one (`install.js`). The root `package.json` therefore carries `"allowScripts": { "esbuild": true }`; without it a clean `npm ci` prints `npm warn install-scripts … esbuild … not yet covered by allowScripts` and esbuild only works because its optional platform package happens to land in `node_modules/@esbuild/`. The entry is name-only rather than `esbuild@<version>`-pinned so an esbuild bump does not need re-approving; to see what is waiting, `npm approve-scripts --allow-scripts-pending`.
+- The editor must typecheck with **this checkout's** TypeScript, not the one VS Code ships: `.vscode/settings.json` sets `js/ts.tsdk.path` to `node_modules/typescript/lib` (the current key — VS Code unified the old `javascript.*` / `typescript.*` pairs under `js/ts.*`, so the old `typescript.tsdk` still works but shows a deprecation squiggle on the settings file), and `tsconfig.json` pins `"types": ["node"]`. If you still see `TS2591: Cannot find name 'process'` (or `node:fs`/`node:path` reported as names) right after `npm ci`, it is the language service running against `@types/node` it cannot parse, or holding a program built before the install — run **TypeScript: Restart TS Server** and pick **Use Workspace Version** via the version picker in the status bar. . `npx tsc -p tsconfig.json --noEmit` staying clean is the proof that the source and config are fine. On a VS Code that predates the `js/ts.*` unification the keys have their old names (`typescript.tsdk`, `typescript.enablePromptUseWorkspaceTsdk`) — nothing else about the setup changes.
 - End-to-end host behavior is exercised by the `.smoke/` overlays — see *Testing conventions* in [`AGENTS.md`](AGENTS.md).
 
 ## Releases (git-flow)
